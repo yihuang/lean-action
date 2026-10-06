@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: lake build
+        uses: leanprover/lean-action@v1
+        with:
+          # Explicit rather than auto-detected, so that the intent is visible:
+          # the package has neither a test driver nor a lint driver (no Mathlib),
+          # so building the two libraries and the examples is the whole check.
+          auto-config: false
+          build: true
+          test: false
+          lint: false

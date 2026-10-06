@@ -1,50 +1,55 @@
-# LeanAction 设计文档
+# LeanAction design document
 
-> 目标：在 Lean 4 中提供一套 DSL，用来**表达 action（状态迁移关系）**，并让**归纳不变式证明**尽可能自动化。
+> Goal: a DSL in Lean 4 for **expressing actions (state-transition relations)**,
+> with **inductive invariant proofs automated** as far as possible.
 
-本文记录的是**已在 `lake build` 下通过验证**的原型（Lean `v4.33.0`，零外部依赖）的设计理由，
-而不是一个纸面提案。所有代码片段都取自仓库中真实编译的文件。
+This document records the reasoning behind a prototype that **actually compiles
+under `lake build`** (Lean `v4.33.0`, zero external dependencies) — not a paper
+proposal. Every code fragment is taken from a file in this repository.
 
 ---
 
-## 1. 设计来源与取舍起点
+## 1. Where the design came from, and the first trade-off
 
-设计最初来自一次关于 "Lean4 表达 action（状态迁移）的 DSL" 的讨论，其中给出的候选骨架是：
+The design started from a discussion of "a DSL for actions (state transitions) in
+Lean 4", whose candidate skeletons were:
 
-| 候选 | 优点 | 问题 |
+| Candidate | Pros | Problems |
 | --- | --- | --- |
-| `Action σ := σ → σ → Prop`（纯关系） | 最贴近语义、universe 干净 | 丢掉 `do` 记法与 monad 组合子 |
-| `Action σ := Set (σ × σ)` | 复用 Mathlib 的 `Set` API | 与关系视角隔一层；不可计算 |
-| `ActionM σ α := StateT σ Set α` | 直接得到 `do`/`<|>`/`get`/`set` | 依赖 Mathlib 的 `Set` monad；`Unit` 与状态不在同一 universe，`Action σ := ActionM σ Unit` 会 universe 报错 |
+| `Action σ := σ → σ → Prop` (pure relation) | closest to the semantics, clean universes | loses `do`-notation and monadic combinators |
+| `Action σ := Set (σ × σ)` | reuses Mathlib's `Set` API | one layer away from the relational view; not computable |
+| `ActionM σ α := StateT σ Set α` | `do`/`<|>`/`get`/`set` come for free | needs Mathlib's `Set` monad; `Unit` and the state do not share a universe, so `Action σ := ActionM σ Unit` is a universe error |
 
-本库最终采取的是**双视图**：以**关系**为语义真身，以**非确定状态 monad** 为书写层。
-下一节解释为什么这样做，以及为此付出的两个工程代价（`Done` 与 `Action` 的 notation）。
-
----
-
-## 2. 分层架构
-
-```
-LeanAction/Rel.lean      关系工具箱：Rel、Comp、TransGen、ReflTransGen + 归纳原理
-LeanAction/Nondet.lean   Nondet α := α → Prop，带 Monad/Alternative/Membership 实例
-LeanAction/Action.lean   DSL 核心：ActionM、Action、原语、组合子、rel 语义引理
-LeanAction/Lens.lean     模块化：Lens、View、focus、积状态 lift、交错并行
-LeanAction/Proof.lean    证明层：Reach、Preserves、Hoare、Module、Refines
-LeanAction/Tactic.lean   自动化：action_simp、step、inv_induct、safe_induct
-LeanAction/Liveness.lean 时序层：Always / Eventually / LeadsTo、行为、公平性、秩论证
-LeanAction/Derive.lean   元编程：view_defs / lens_defs 命令（结构字段的 View/Lens 生成）
-LeanAction/Frame.lean    共享状态组合：Disjoint（框架条件）、框架定理、ViewModule.parallel
-Examples/                计数器、嵌套结构、while、交错并行、精化
-```
-
-依赖方向严格单向：`Rel → Nondet → Action → Lens → Proof → Tactic`。
-**没有 Mathlib 依赖**（原因见 §8）。
+What this library does instead is keep **two views**: the **relation** is the
+semantic ground truth, the **nondeterministic state monad** is the surface syntax.
+The next section explains why, and the two engineering prices paid for it (`Done`,
+and `Action` being a notation).
 
 ---
 
-## 3. 核心语义决策
+## 2. Layered architecture
 
-### 3.1 非确定性是 Prop 值单子
+```
+LeanAction/Rel.lean      relation toolkit: Rel, Comp, TransGen, ReflTransGen + induction
+LeanAction/Nondet.lean   Nondet α := α → Prop, with Monad/Alternative/Membership
+LeanAction/Action.lean   the core DSL: ActionM, Action, primitives, combinators, rel lemmas
+LeanAction/Lens.lean     modularity: Lens, View, focus, product lifts, interleave
+LeanAction/Proof.lean    proof layer: Reach, Preserves, Hoare, Module, Refines
+LeanAction/Tactic.lean   automation: action_simp, step, inv_induct, safe_induct
+LeanAction/Liveness.lean temporal layer: Always / Eventually / LeadsTo, behaviors, fairness, ranks
+LeanAction/Derive.lean   metaprogramming: view_defs / lens_defs commands
+LeanAction/Frame.lean    shared-state composition: Disjoint (frame condition), frame theorem, parallel
+Examples/                counters, nested structures, while, interleaving, refinement, …
+```
+
+Dependencies are strictly one-directional: `Rel → Nondet → Action → Lens → Proof →
+Tactic`. There is **no Mathlib dependency** (§8).
+
+---
+
+## 3. Core semantic decisions
+
+### 3.1 Nondeterminism is a `Prop`-valued monad
 
 ```lean
 abbrev Nondet (α : Type u) : Type u := α → Prop
@@ -52,36 +57,40 @@ abbrev Nondet (α : Type u) : Type u := α → Prop
 
 * `pure a := fun b => b = a`
 * `s >>= f := fun b => ∃ a, s a ∧ f a b`
-* `s <|> t := fun a => s a ∨ t a`，`failure := fun _ => False`
+* `s <|> t := fun a => s a ∨ t a`, `failure := fun _ => False`
 
-这是经典的 **angelic nondeterminism**：`s a` 读作"`a` 是可能的结果"，`>>=` 是
-"所有分支的并"，`<|>` 是析取。因为它是 `Prop` 值的，库天然是**规范层**而不是执行层
-（执行层的讨论见 §9.1）。
+This is classic **angelic nondeterminism**: `s a` reads "`a` is a possible
+result", `>>=` is the union over all branches, `<|>` is disjunction. Because it is
+`Prop`-valued the library is inherently a **specification layer** rather than an
+execution layer (see §9.1).
 
-第一个工程细节：Lean 4.33 的 `Alternative.orElse` 是**惰性**的
-(`f α → (Unit → f α) → f α`)，因此实例必须写成 `fun s t => union s (t ())`；
-`Applicative`/`Monad`/`Alternative` 三处都要**显式给出全部字段**，否则 `pure`
-会在实例自身的默认值解析中绕回自己（这是实际踩到的坑）。
+First engineering detail: in Lean 4.33 `Alternative.orElse` is **lazy**
+(`f α → (Unit → f α) → f α`), so the instance has to be written as
+`fun s t => union s (t ())`; and `Applicative`/`Monad`/`Alternative` all need
+**every field spelled out**, otherwise `pure` resolves through the default values
+of the instance being defined and loops back to itself (a trap actually hit here).
 
 ### 3.2 `ActionM σ α := σ → Nondet (α × σ)`
 
-为什么不直接用 `StateT σ Nondet α`？因为 `StateT` 就是
-`σ → m (α × σ)`，而 Lean 的 `StateT`/`Monad` 都要求 **`α` 与 `σ` 落在同一个 universe**。
-`Unit : Type 0`，所以 `StateT σ Nondet Unit` 只有在 `σ : Type 0` 时合法，
-这会把状态类型锁死在 `Type 0`。
+Why not simply `StateT σ Nondet α`? Because `StateT` *is* `σ → m (α × σ)`, and
+Lean's `StateT`/`Monad` require **`α` and `σ` to live in the same universe**.
+`Unit : Type 0`, so `StateT σ Nondet Unit` is only legal for `σ : Type 0`, which
+would pin the state type to `Type 0`.
 
-因此本库直接把这个类型写出来（definitionally 与 `StateT` 相同），并把 monad
-实例显式挂在 `ActionM σ` 上（`Monad` + `Alternative`，全部字段显式）。这样：
+So the type is written out directly (definitionally the same as `StateT`), with the
+monad instances attached explicitly to `ActionM σ` (`Monad` + `Alternative`, all
+fields given). Consequences:
 
-* 状态 `σ : Type u` 与返回类型 `α : Type u` 同 universe，`Monad`/`Alternative` 可用；
-* `do` 记法、`<|>`、`get`/`write`/`modify`/`read` 全部免费获得；
-* 无需任何 Mathlib 依赖。
+* the state `σ : Type u` and the return type `α : Type u` share a universe, so
+  `Monad`/`Alternative` apply;
+* `do`-notation, `<|>`, `get`/`write`/`modify`/`read` all come for free;
+* no Mathlib dependency is needed.
 
-### 3.3 `Done`：语句的返回类型
+### 3.3 `Done`: the return type of statements
 
-纯状态迁移的返回类型需要一个**位于 `Type u` 的单点类型**。
-`ULift.{u,0} Unit : Type (u+1)`、`PUnit.{u} : Type (u+1)` 都差一级 universe，
-于是库内定义：
+A plain state transition needs a **singleton type in `Type u`** as its return type.
+`ULift.{u,0} Unit : Type (u+1)` and `PUnit.{u} : Type (u+1)` are one universe too
+high, so the library defines:
 
 ```lean
 inductive Done : Type u where
@@ -91,70 +100,73 @@ instance : Subsingleton Done := ⟨fun a b => by cases a; cases b; rfl⟩
 @[simp] theorem eq_iff_true (d e : Done) : (d = e) = True := ...
 ```
 
-`Done.eq_iff_true` 以及 `rel_bind_action`（见 §4.3）专门用来把 `Done` 从
-`do` 块产生的存在量词中消掉，使自动化看到的是干净的 `∃ t, rel A s t ∧ rel B t s'`。
+`Done.eq_iff_true` and `rel_bind_action` (§4.3) exist to erase `Done` from the
+existentials that `do` blocks produce, so that the automation sees the clean shape
+`∃ t, rel A s t ∧ rel B t s'`.
 
-### 3.4 `Action` 是 notation，不是 abbrev
+### 3.4 `Action` is a notation, not an `abbrev`
 
 ```lean
 notation "Action" σ:max => ActionM σ Done
 ```
 
-这是被 `do`-elaborator 逼出来的决定：若写成
-`abbrev Action σ := ActionM σ Done`，那么面对期望类型 `Action Nat`，
-Lean 的 `do` 块会先把 monad 变量定成**未应用的** `Action`，然后去合成
-`Pure Action`——实例是挂在 `ActionM σ` 上的，于是失败。
+This was forced by the `do`-elaborator: with
+`abbrev Action σ := ActionM σ Done`, an expected type `Action Nat` makes Lean's
+`do` block fix the monad variable to the **unapplied** `Action` and then try to
+synthesize `Pure Action` — but the instances live on `ActionM σ`, so it fails.
 
-改成 notation 后，`Action Nat` 在 elaboration 之前就展开成 `ActionM Nat Done`，
-`ActionM` 始终是头常量，实例合成正常。代价是不能再写 `Action.rel` 这样的命名空间
-（`Action` 成了关键字），所以库内所有定义直接放在 `namespace LeanAction` 下，
-使用者 `open LeanAction` 后用 `rel`、`skip`、`Preserves` 等裸名。
+With a notation, `Action Nat` expands to `ActionM Nat Done` before elaboration,
+`ActionM` is always the head constant, and instance synthesis works. The price is
+that `Action.rel`-style namespacing is impossible (`Action` became a keyword), so
+everything in the library lives directly in `namespace LeanAction`; users
+`open LeanAction` and use the bare names `rel`, `skip`, `Preserves`, ….
 
-### 3.5 关系视图 `rel`
+### 3.5 The relational view, `rel`
 
 ```lean
 def rel (A : Action σ) : Rel σ σ := fun s s' => A s (Done.mk, s')
 ```
 
-`rel` 是**唯一**把两个视图连起来的桥，并且是**完备的**：
+`rel` is the **only** bridge between the two views, and it is **complete**:
 
 ```lean
 theorem ext {A B : Action σ} (h : ∀ s s', rel A s s' ↔ rel B s s') : A = B
 theorem ofRel_rel (A : Action σ) : ofRel (rel A) = A
 ```
 
-证明层只谈论 `rel`，因此规范可以自由地换写成 `do` 块或关系式，而证明不受影响。
+The proof layer only ever talks about `rel`, so specifications can be rewritten as
+`do` blocks or as relations without touching the proofs.
 
 ---
 
-## 4. DSL
+## 4. The DSL
 
-### 4.1 原语
+### 4.1 Primitives
 
-| 记号 | 语义（`rel`） | 说明 |
+| Notation | Semantics (`rel`) | Meaning |
 | --- | --- | --- |
-| `skip` | `s' = s` | 空动作 |
-| `fail` / `failure` | `False` | 死锁 |
-| `guard P` / `assert P` / `assume P` | `P s ∧ s' = s` | 前置条件 |
-| `update f` | `s' = f s` | 状态更新 |
-| `set v` | `s' = v` | 整体赋新状态 |
-| `nondet R` | `R s s'` | 由关系给出的任意迁移 |
-| `choiceAll B` | `∃ i, rel (B i) s s'` | 一族动作的任选 |
+| `skip` | `s' = s` | do nothing |
+| `fail` / `failure` | `False` | deadlock |
+| `guard P` / `assert P` / `assume P` | `P s ∧ s' = s` | precondition |
+| `update f` | `s' = f s` | state update |
+| `set v` | `s' = v` | overwrite the state |
+| `nondet R` | `R s s'` | any transition allowed by a relation |
+| `choiceAll B` | `∃ i, rel (B i) s s'` | choose among a family of actions |
 
-### 4.2 组合子
+### 4.2 Combinators
 
-| 记号 | 语义（`rel`） |
+| Notation | Semantics (`rel`) |
 | --- | --- |
-| `A <|> B`（`Alternative`） | `rel A s s' ∨ rel B s s'` |
+| `A <|> B` (`Alternative`) | `rel A s s' ∨ rel B s s'` |
 | `seq A B` / `A >>= f` | `∃ t, rel A s t ∧ rel B t s'` |
-| `iterate A n` | `n` 次 `A` 的复合 |
-| `while[P] A` / `loop P A` | `(P ∧ A)^* ; ¬P`，即 `ReflTransGen` + 终止条件 |
-| `liftLeft A` / `liftRight B` | 积状态上的单分量动作 |
+| `iterate A n` | `n`-fold composition of `A` |
+| `while[P] A` / `loop P A` | `(P ∧ A)^* ; ¬P`, i.e. `ReflTransGen` plus the exit condition |
+| `liftLeft A` / `liftRight B` | single-component actions on a product state |
 
-`<|>` 直接复用 Lean 的 `Alternative` 记法，`;`/`do` 复用 monad 的 bind——
-这正符合"尽量复用现有结构与符号"的目标。
+`<|>` reuses Lean's `Alternative` notation and `;`/`do` reuse the monad's bind —
+exactly the "reuse existing structures and symbols" goal.
 
-### 4.3 `do` 记法
+### 4.3 `do`-notation
 
 ```lean
 def incr : Action Ctr := do
@@ -162,33 +174,35 @@ def incr : Action Ctr := do
   ActionM.modify fun t => { t with n := t.n + 1, log := s.n :: t.log }
 ```
 
-`get`/`read`/`write`/`modify` 定义在 `ActionM` 命名空间并 `export` 到
-`LeanAction`。语义引理 `rel_bind`（一般情形）与 `rel_bind_action`（语句到语句）
-让 `simp` 能把 `do` 块直接化成 `∃` 形式；`action_simp` 中把
-`rel_bind_action` 排在 `rel_bind` **之前**，以保证 `do A; B` 得到
-`∃ t, rel A s t ∧ rel B t s'` 这一最自然的形状。
+`get`/`read`/`write`/`modify` are defined in `namespace ActionM` and re-exported
+into `LeanAction`. The semantic lemmas `rel_bind` (general) and `rel_bind_action`
+(statement-to-statement) let `simp` reduce a `do` block to an `∃` form directly; in
+`action_simp`, `rel_bind_action` is listed **before** `rel_bind` so that
+`do A; B` yields the most natural shape `∃ t, rel A s t ∧ rel B t s'`.
 
-### 4.4 `rel_*` 引理集 = 语义归一化
+### 4.4 The `rel_*` lemma set = semantic normalization
 
-所有 `rel_skip`、`rel_seq`、`rel_orElse`、`rel_focus` … 都是 `@[simp]`，且
-**右端不再出现 `rel`**。因此 `simp`/`grind` 能保证把任意复合 action
-归约成一阶的状态命题并停机。这是全部自动化的地基；除此之外没有任何
-自定义 rewrite 引擎。
+Every `rel_skip`, `rel_seq`, `rel_orElse`, `rel_focus`, … is `@[simp]` and its
+**right-hand side no longer mentions `rel`**. Hence `simp`/`grind` are guaranteed
+to reduce any composite action to a first-order statement about states, and to
+terminate while doing so. That is the foundation of all the automation; there is no
+custom rewrite engine anywhere else.
 
 ---
 
-## 5. 模块化
+## 5. Modularity
 
-### 5.1 `View`（无定律）与 `Lens`（有定律）
+### 5.1 `View` (no laws) and `Lens` (with laws)
 
-嵌套结构的状态需要"聚焦到某个字段"的能力。库提供两层：
+States built from nested structures need the ability to "zoom into a field". The
+library offers two layers:
 
 ```lean
-structure View (σ α : Type u) where   -- 无定律，一行即可构造
+structure View (σ α : Type u) where   -- no laws, one line to construct
   get : σ → α
   set : σ → α → σ
 
-structure Lens (σ α : Type u) where   -- get/set + 三条 lens 定律
+structure Lens (σ α : Type u) where   -- get/set plus the three lens laws
   get : σ → α
   set : σ → α → σ
   get_set : ∀ s a, get (set s a) = a
@@ -196,42 +210,54 @@ structure Lens (σ α : Type u) where   -- get/set + 三条 lens 定律
   set_set : ∀ s a b, set (set s a) b = set s b
 ```
 
-* `focusView v A`：把 `A : Action α` 提升到 `Action σ`，`rel_focusView` 是
-  **`Iff.rfl`-级别**的展开，不需要任何定律；
-* `Lens.comp`、`View.comp`：嵌套字段（`Outer → Inner → Nat`）；
-* `Lens.fst`/`Lens.snd`、`View.fst`/`View.snd`：积状态分量。
+* `focusView v A` lifts `A : Action α` to `Action σ`; `rel_focusView` is an
+  **`Iff.rfl`-level** unfolding that needs no laws at all;
+* `Lens.comp`, `View.comp`: nested fields (`Outer → Inner → Nat`);
+* `Lens.fst`/`Lens.snd`, `View.fst`/`View.snd`: components of a product.
 
-为什么两层？因为三条 lens 定律是**证明负担**。真正需要定律的地方只有
-"聚焦不再改动其它字段"这一类推理（`rel_focus'`），而**定义**聚焦动作并不需要。
-把定律与定义解耦，使用者写 `View` 一行搞定，需要更强推理时再升级到 `Lens`。
+Why two layers? Because the three lens laws are a **proof burden**. Laws are needed
+only for reasoning such as "focusing does not change other fields" (`rel_focus'`),
+while *defining* a focused action needs none of them. Decoupling laws from
+definitions lets users write a one-line `View` and upgrade to a `Lens` only when
+stronger reasoning is required.
 
-**自动生成**（`LeanAction/Derive.lean`）有两条路径：
+**Generation** (`LeanAction/Derive.lean`) has two paths:
 
-1. **`deriving ViewFields, LensFields`**（推荐）：为每个字段生成
-   `Struct.fView : View Struct α` 与 `Struct.fLens : Lens Struct α`
-   （三条 lens 定律由结构 eta 的 `rfl` 关闭）。走 `deriving` 机制
-   （标记类 + `Lean.Elab.registerDerivingHandler`），因此：
-   * 声明名是**绝对**的（`Deep.Point.xLens`），namespace 内也正确；
-   * **不受 doc comment 限制**（`deriving` 子句是结构声明的一部分）。
-   代价是**不支持带参数的结构**：框架用 `Deriving.mkHeader` 生成的参数绑定名带
-   hygiene 后缀，无法写进 getter/setter 字符串，因此 handler 显式报错并指向命令路径。
-2. **`view_defs T` / `lens_defs T`**：类型以 **term** 给出，所以参数化结构也能用
-   （在 `section` + `variable (α : Type)` 里写 `view_defs (Box α)`）。
-   实现方式是 command：getter/setter 从字符串 `"fun s : Box α => s.val"` /
-   `"fun s v => { s with val := v }"` 经 `Parser.runParserCategory` 解析成
-   **良构的 `structInstLVal` 节点**，再 `elabCommand` 发出 `def`。
+1. **`deriving ViewFields, LensFields`** (recommended): emits
+   `Struct.fView : View Struct α` and `Struct.fLens : Lens Struct α` per field (the
+   three lens laws are closed by structure eta's `rfl`). It goes through the
+   `deriving` machinery (marker classes + `Lean.Elab.registerDerivingHandler`), so:
+   * declaration names are **absolute** (`Deep.Point.xLens`), correct inside
+     namespaces;
+   * there is **no doc-comment restriction** (the `deriving` clause is part of the
+     structure declaration).
+   The price is that **parameterized structures are not supported**: the framework
+   names parameter binders hygienically (`Deriving.mkHeader`), so they cannot be
+   written into the getter/setter strings; the handler fails with a clear message
+   pointing at the command path.
+2. **`view_defs T` / `lens_defs T`**: the type is given as a **term**, so
+   parameterized structures work too (inside a `section` with
+   `variable (α : Type)`, write `view_defs (Box α)`). The implementation is a
+   command: the getter/setter strings `"fun s : Box α => s.val"` /
+   `"fun s v => { s with val := v }"` are parsed by `Parser.runParserCategory`
+   into **well-formed `structInstLVal` nodes**, and `elabCommand` then emits the
+   `def`.
 
-之所以不写成 term 宏，见 §11.6：`{ s with f := v }` 的字段位置属于
-`Lean.Parser.Term.structInstLVal` 节点，term 宏无法用 `ident` 反引用拼出来
-（宏定义处能过，**使用处**才报 `unexpected syntax`）。
+Why not a term macro: see §11.6 — the field position in `{ s with f := v }` is a
+`Lean.Parser.Term.structInstLVal` node, which a term macro cannot build from an
+`ident` antiquotation (the macro *definition* checks fine; the *use site* reports
+`unexpected syntax`).
 
-command 路径的两个使用注意（都由实现细节决定，也写在 `Derive.lean` 的文档里）：
-* 自定义 command **前面不能放 doc comment**（`/-- … -/` 只挂到声明类命令上），
-  要用普通注释 `/- … -/`；
-* 结构必须位于当前 namespace 或其子 namespace 内，因为 `elabCommand` 会给声明名
-  加上当前 namespace 前缀（否则会落到 `Ns.Ns.Struct.fView`）。
+Two usage notes for the command path (both consequences of the implementation, both
+documented in `Derive.lean`):
 
-### 5.2 积状态与交错并行
+* a custom command **cannot be preceded by a doc comment** (`/-- … -/` only
+  attaches to declaration commands); use a plain `/- … -/` comment;
+* the structure must live in the current namespace or below it, because
+  `elabCommand` prefixes declaration names with the current namespace (otherwise
+  they land at `Ns.Ns.Struct.fView`).
+
+### 5.2 Product state and interleaving
 
 ```lean
 def Module.interleave (M : Module σ) (N : Module τ) : Module (σ × τ) where
@@ -239,12 +265,13 @@ def Module.interleave (M : Module σ) (N : Module τ) : Module (σ × τ) where
   next := liftLeft M.next <|> liftRight N.next
 ```
 
-异步（交错）并行的标准编码：状态取积，每步要么推进左分量、要么推进右分量。
-`liftLeft`/`liftRight` 的语义引理把"另一分量不变"直接写进 `rel`，所以
-交错并行的 step 义务仍然是一阶的（见 `Examples/Parallel.lean` 的
-`twoCounters_inv_step`）。
+The standard encoding of asynchronous (interleaved) parallelism: the state is a
+product, and each step advances either the left or the right component. The
+semantic lemmas for `liftLeft`/`liftRight` bake "the other component is unchanged"
+directly into `rel`, so the step obligations of an interleaving stay first-order
+(see `twoCounters_inv_step` in `Examples/Parallel.lean`).
 
-### 5.3 精化
+### 5.3 Refinement
 
 ```lean
 def Simulates (R : Rel σ_a σ_c) (Abs : Module σ_a) (Conc : Module σ_c) : Prop :=
@@ -256,69 +283,81 @@ def Refines (f : σ_c → σ_a) (Abs : Module σ_a) (Conc : Module σ_c) : Prop 
   Simulates (fun a c => a = f c) Abs Conc
 ```
 
-允许**stuttering**（抽象侧走零步或多步）。核心定理是
-`Refines.reach`（模拟关系沿具体可达性提升）与 `Refines.safe`
-（安全性沿精化传递）——`Examples/Parallel.lean` 演示了"实现只多了 stutter，
-安全性仍从规范继承"。
+**Stuttering** is allowed (the abstract side may take zero or more steps). The core
+theorems are `Refines.reach` (a simulation lifts along concrete reachability) and
+`Refines.safe` (safety transfers along a refinement); `Examples/Parallel.lean`
+demonstrates "the implementation only stutters more, yet safety is inherited from
+the specification".
 
 ---
 
-### 5.4 共享状态：把框架条件显式化（`LeanAction/Frame.lean`）
+### 5.4 Shared state: making the frame condition explicit (`LeanAction/Frame.lean`)
 
-§5.2 的 `interleave` 只在**积状态**上组合，因为那里"两个分量互不干扰"这件事被
-*类型*硬化了：状态就是 `σ × τ`，一个分量的动作不可能碰到另一个。共享 record 上
-没有这种便利——进程 1 写 `pc1`、进程 2 写 `pc2`，但两者都可能写 `turn`。
+The `interleave` of §5.2 composes only **product states**, because there "the two
+components do not interfere" is *hard-wired into the type*: the state is `σ × τ`,
+and one component's action cannot touch the other's. A shared record has no such
+convenience — process 1 writes `pc1`, process 2 writes `pc2`, and both may write
+`turn`.
 
-要重新拿到组合性，就必须把**框架条件（frame condition）**写成可证明的事实：
+To recover compositionality one has to state the **frame condition** as a provable
+fact:
 
 ```lean
 structure Disjoint (v₁ : View σ α) (v₂ : View σ β) : Prop where
-  get_set : ∀ s a, v₂.get (v₁.set s a) = v₂.get s     -- 写 v₁ 不影响读 v₂
+  get_set : ∀ s a, v₂.get (v₁.set s a) = v₂.get s     -- writing v₁ does not disturb reading v₂
   set_get : ∀ s b, v₁.get (v₂.set s b) = v₁.get s
-  set_set : ∀ s a b, v₁.set (v₂.set s b) a = v₂.set (v₁.set s a) b   -- 同时执行用
+  set_set : ∀ s a b, v₁.set (v₂.set s b) a = v₂.set (v₁.set s a) b   -- for simultaneous execution
 ```
 
-为什么是**交换律**而不是"字段名不交"：在这个抽象层没有变量名，能说的就是
-"一个的效果对另一个不可见"。这一步是**证明义务**，不是约定（`Examples/Frame.lean`
-里用 `cases s; rfl` 关掉）。
+Why **commutation** rather than "different field names"? At this abstraction level
+there are no variable names; the only statement available is "one's effect is
+invisible to the other". This is a **proof obligation**, not a convention (in
+`Examples/Frame.lean` it is discharged by `cases s; rfl`).
 
-在它之上是本层的三条结果：
+On top of it sit three results:
 
-* `Disjoint.get_of_rel`：聚焦动作不动另一个投影（框架条件最常用的形态）；
-* `Preserves.focusView`（只需 `get_set`，不需要完整 lens 定律）：**分量局部的不变式
-  提升到共享状态**；
-* `ViewModule.parallel_preserves`：**框架定理**——交错步保持不变式
-  `P ∘ v₁.get ∧ Q ∘ v₂.get`，其中 `P` 只由分量 1 负责、`Q` 只由分量 2 负责，
-  "另一半"由 `Disjoint` 自动传递（还有单边形式 `parallel_preserves_fst/snd`）。
+* `Disjoint.get_of_rel`: a focused action does not move the other projection (the
+  most-used form of the frame condition);
+* `Preserves.focusView` (needs only `get_set`, not the full lens laws): a
+  **component-local invariant lifts to the shared state**;
+* `ViewModule.parallel_preserves`: the **frame theorem** — an interleaved step
+  preserves `P ∘ v₁.get ∧ Q ∘ v₂.get`, where `P` is the responsibility of component
+  1 and `Q` of component 2, and the "other half" is transported automatically by
+  `Disjoint` (one-sided forms `parallel_preserves_fst/snd` are also provided).
 
-由此得到共享状态系统上的安全性与活性：
+From these come safety and liveness on shared state:
 
 ```lean
-theorem parallel_safe   -- 分量不变式（各自在自己的状态类型上证明）⇒ 组合系统安全
-theorem parallel_leadsTo -- 分量活性 ⇒ 组合活性（配合 proj_step / weakFair_of_lift /
-                         --   forward_stable_of_preserves：投影会 stutter，所以要序列级秩定理）
+theorem parallel_safe    -- component invariants (each proved on its own state type) ⇒ composed safety
+theorem parallel_leadsTo -- component liveness ⇒ composed liveness (with proj_step /
+                         --   weakFair_of_lift / forward_stable_of_preserves: projections
+                         --   stutter, hence the sequence-level rank theorem)
 ```
 
-**边界是定理，不是文档**：`Examples/Frame.lean` 证明 mutex 的两个进程
-**不**满足 `Disjoint`（两者都写 `turn`）：
+**The boundary is a theorem, not a remark.** `Examples/Frame.lean` proves that the
+two mutex processes do **not** satisfy `Disjoint` (both write `turn`):
 
 ```lean
 theorem mutex_not_disjoint : ¬ Disjoint mutexP₁ mutexP₂
 ```
 
-所以那个协议确实需要手写全局不变式（§11.5 的 `inv`），而下一步的自然方向是
-**rely/guarantee**（允许足迹相交，用 R/G 条件代替不交性）——见 §9.3。
+so that protocol genuinely needs a hand-written global invariant (the `inv` of
+§11.5), and the natural next step is **rely/guarantee** (letting footprints
+overlap by replacing disjointness with R/G conditions) — see §9.3.
 
-与 §5.2 的关系：积状态版是"框架条件被状态类型硬化"的特例，`disjoint_fst_snd`
-就是 `Lens.fst`/`Lens.snd` 的不交性证明。
+Relation to §5.2: the product version is the special case where "the frame
+condition is hard-wired into the state type"; `disjoint_fst_snd` is precisely the
+disjointness proof for `Lens.fst`/`Lens.snd`.
 
-**足迹相交时：rely/guarantee。** `Disjoint` 说"环境碰不到我的足迹"。把它换成
-**关系**而不是**足迹**，就得到 rely/guarantee：每个分量只声明它对环境的假设
-（rely），组合规则只要求"我的步被对方的 rely 允许"：
+**When footprints overlap: rely/guarantee.** `Disjoint` says "the environment
+cannot touch my footprint". Replacing the **footprint** by a **relation** yields
+rely/guarantee: each component declares only the assumption it makes about the
+environment (its rely), and the composition rule asks only that "my steps are
+permitted by the other's rely":
 
 ```lean
 structure Compatible (I : Nondet σ) (A₁ A₂ : Action σ) (R₁ R₂ : Rel σ σ) : Prop where
-  left  : ∀ s s', I s → rel A₁ s s' → R₂ s s'    -- 分量 1 的步被 R₂ 允许
+  left  : ∀ s s', I s → rel A₁ s s' → R₂ s s'    -- component 1's steps are permitted by R₂
   right : ∀ s s', I s → rel A₂ s s' → R₁ s s'
 
 theorem Preserves.orElse_of_compatible (hc : Compatible I A₁ A₂ R₁ R₂)
@@ -326,31 +365,37 @@ theorem Preserves.orElse_of_compatible (hc : Compatible I A₁ A₂ R₁ R₂)
     Preserves (A₁ <|> A₂) I
 ```
 
-两条稳定性义务只提到 **接口** `R₁`/`R₂`，从不提到对方分量的代码——这就是它的价值
-（模块化：另一分量换实现，只要仍满足接口，本分量的证明不动）。对**状态不变式**而言
-它换来的是模块化而不是更短的证明（见 §11.9 的不可行性论证）；真正改变证明形状的是
-**前缀性质**（"某区域保持到目标达成"）：
+The two stability obligations mention only the **interfaces** `R₁`/`R₂`, never the
+other component's code — that is the payoff (modularity: the other component can be
+re-implemented as long as it still satisfies the interface, and this component's
+proof does not change). For **state invariants** what it buys is modularity rather
+than shorter proofs (see the infeasibility argument in §11.9); what genuinely
+changes the shape of a proof is a **prefix property** ("a region holds until the
+goal is reached"):
 
 ```lean
 theorem relyGuarantee_until (hbeh : ∀ n, rel (A₁ <|> A₂) (b n) (b (n+1)))
-    (h₁ : ∀ s s', I s → rel A₁ s s' → I s' ∨ G s')     -- 分量自己的保证
-    (h₂ : ∀ s s', I s → rel A₂ s s' → I s')            -- 环境的 rely
+    (h₁ : ∀ s s', I s → rel A₁ s s' → I s' ∨ G s')     -- the component's own guarantee
+    (h₂ : ∀ s s', I s → rel A₂ s s' → I s')            -- the environment's rely
     (h₀ : I (b 0)) : ∀ n, (∀ j, j ≤ n → ¬ G (b j)) → I (b n)
 ```
 
-`Examples/MutexLiveness.region_until_goal` 现在就是这条定理的实例：原来的
-"六路 `action_simp; grind` + 手写前缀归纳"被拆成两个接口引理（进程 1 的保证、
-进程 2 的 rely），归纳交给库。
+`Examples/MutexLiveness.region_until_goal` is now an instance of this theorem: the
+old "six-way `action_simp; grind` plus a hand-written prefix induction" is split
+into two interface lemmas (process 1's guarantee, process 2's rely), with the
+induction supplied by the library.
 
-**同步（同时执行）**：`ViewModule.sync` 让两个分量一起走一步，
-`Disjoint.set_set` 保证两次更新的顺序无所谓，`sync_preserves`/`sync_proj` 说明
-两个分量的不变式都被保持、且每个投影**恰好**前进（不像交错那样可能 stutter）。
-注意 lock-step 组合要求两边都能走步。
+**Synchronous (lock-step) composition**: `ViewModule.sync` makes both components
+step together; `Disjoint.set_set` guarantees that the order of the two updates does
+not matter, and `sync_preserves`/`sync_proj` say that both invariants are preserved
+and that each projection advances **exactly** (unlike interleaving, which may
+stutter). Note that lock-step composition requires both components to be able to
+move.
 
-**自动化**：`disjoint_auto` 一条 tactic 关掉结构字段 view 的 `Disjoint` 目标
-（逐点展开 + `cases` + `rfl`）。
+**Automation**: `disjoint_auto` closes `Disjoint` goals for structure-field views in
+one tactic (pointwise unfolding + `cases` + `rfl`).
 
-## 6. 证明层：只有一个归纳引擎
+## 6. The proof layer: a single induction engine
 
 ```lean
 def Reach (A : Action σ) : Rel σ σ := Rel.ReflTransGen (rel A)
@@ -359,58 +404,65 @@ def Preserves (A : Action σ) (I : Nondet σ) : Prop :=
   ∀ s, I s → ∀ s', rel A s s' → I s'
 
 theorem Preserves.reach (h : Preserves A I) :
-    ∀ s, I s → ∀ s', Reach A s s' → I s'      -- ← 唯一的归纳
+    ∀ s, I s → ∀ s', Reach A s s' → I s'      -- ← the only induction
 ```
 
-`Reach` 用 `ReflTransGen`（而不是 `TransGen`）是为了让"零步"情形直接落到
-初始条件上。所有安全性结论都是 `Preserves.reach` 的推论：
+`Reach` uses `ReflTransGen` (not `TransGen`) so that the "zero steps" case lands
+directly on the initial condition. Every safety statement is a corollary of
+`Preserves.reach`:
 
 ```lean
 theorem Module.safe_of_preserves (hinit : M.init ⊆ₙ P) (hstep : Preserves M.next P) : M.Safe P
 theorem Module.safe_of_invariant (hinit : M.init ⊆ₙ I) (hstep : Preserves M.next I) (hIP : I ⊆ₙ P) : M.Safe P
 ```
 
-Hoare 三元组 `Hoare P A Q` 也是同一套语义的另一面，并为 `skip`/`seq`/`<|>`/
-`guard` 以及**聚焦**（`Hoare.focusView`：内层三元组通过 view 提升到外层）
-提供了规则。
+Hoare triples `Hoare P A Q` are the other face of the same semantics, with rules for
+`skip`/`seq`/`<|>`/`guard` and for **focusing** (`Hoare.focusView`: an inner triple
+lifts through a view to the outer state).
 
-这个"单一归纳引擎 + 组合子代数"的结构，正是自动化能够保持简单的根本原因：
-自动化永远只需要处理**一步**，从不接触归纳本身。
+This "single induction engine + algebra of combinators" structure is precisely why
+the automation can stay simple: it only ever has to discharge **one step**, and
+never touches the induction itself.
 
 ---
 
-## 7. 自动化
+## 7. Automation
 
-### 7.1 为什么不做更重的自动化
+### 7.1 Why not heavier automation
 
-候选做法包括：自定义 `aesop` 规则集、`@[grind]` 全量标注、或在元编程里做
-符号执行。原型选择的是一条更窄但**可预测**的路线：
+Candidates were: a custom `aesop` rule set, `@[grind]` annotations everywhere, or
+symbolic execution in metaprogramming. The prototype chose a narrower but
+**predictable** path:
 
-1. **语义归一化交给 `simp`**：`rel_*` 引理集已经是完备的展开规则（§4.4）。
-2. **一阶推理交给 `grind`**：状态是普通数据结构，剩下的义务是算术/等式/析取。
-3. **证明骨架交给 4 个宏**，它们只负责"摆形状"，不做搜索。
+1. **semantic normalization goes to `simp`** — the `rel_*` set is already a
+   complete unfolding rule set (§4.4);
+2. **first-order reasoning goes to `grind`** — states are ordinary data structures
+   and what remains is arithmetic/equality/disjunction;
+3. **the proof skeleton goes to four macros**, which only "arrange the shape" and do
+   no search.
 
-因此自动化失败时，失败点总是可解释的（"某个 def 还没展开"或"grind 推不出这条算术"）。
+So when the automation fails, the failure is always explicable ("some `def` has not
+been unfolded", or "`grind` cannot derive this arithmetic fact").
 
-### 7.2 四个宏
+### 7.2 The four macros
 
-| 宏 | 作用 |
+| Macro | Purpose |
 | --- | --- |
-| `action_simp` | `simp (config := {failIfUnchanged := false}) only [rel_*, ActionM.*_apply, Prod.mk.injEq, ...] at *`；把动作语义展开到一阶 |
-| `step` | `action_simp; try grind`：一条 step 义务 |
-| `inv_induct` | `unfold Preserves; intro s hs s' hstep; step`：`Preserves` 的标准骨架 |
-| `safe_induct` | `apply Module.safe_of_preserves`，留下 `init ⊆ P` 与 `Preserves next P` 两个目标 |
+| `action_simp` | `simp (config := {failIfUnchanged := false}) only [rel_*, ActionM.*_apply, Prod.mk.injEq, ...] at *`; unfold action semantics to first order |
+| `step` | `action_simp; try grind`: one step obligation |
+| `inv_induct` | `unfold Preserves; intro s hs s' hstep; step`: the canonical `Preserves` skeleton |
+| `safe_induct` | `apply Module.safe_of_preserves`, leaving the two goals `init ⊆ P` and `Preserves next P` |
 
-两个关键实现细节：
+Two implementation details matter:
 
-* `failIfUnchanged := false`：`action_simp` 在"没有 `rel` 可展开"时不应报错，
-  否则 `try step` 与后续手动展开会互相打架。
-* macro 里**不要**用 `·` 分支：早期版本把 `·` 写在 macro 体内，导致调用处的
-  `·` 与 macro 内部的目标聚焦互相抢占，出现"unsolved goals"与
-  "No goals to be solved"同时报出的诡异现象。现在统一用
-  `apply ... <;> try step`，目标结构留给调用者。
+* `failIfUnchanged := false`: `action_simp` must not error when there is no `rel` to
+  unfold, otherwise `try step` and subsequent manual unfolding fight each other;
+* do **not** use `·` bullets inside a macro: an early version had `·` in a macro
+  body, and the caller's `·` competed with the macro's goal focusing, producing the
+  bizarre combination of "unsolved goals" and "No goals to be solved". Now the
+  pattern is `apply ... <;> try step`, leaving the goal structure to the caller.
 
-### 7.3 使用者的典型证明
+### 7.3 A typical user proof
 
 ```lean
 theorem twoCounters_safe : twoCounters.Safe inv := by
@@ -424,349 +476,439 @@ theorem twoCounters_safe : twoCounters.Safe inv := by
     grind
 ```
 
-模式是固定的：**先展开使用者自己的 `def`（库无法猜），再 `action_simp`
-展开动作语义，最后 `grind` 收尾**。`Examples/` 里的每个定理都遵循它。
+The pattern is fixed: **first unfold the user's own `def`s (the library cannot
+guess them), then `action_simp` to unfold the action semantics, then `grind` to
+finish**. Every theorem in `Examples/` follows it.
 
 ---
 
-## 8. 与 Mathlib 的关系
+## 8. Relationship to Mathlib
 
-本库**刻意不依赖 Mathlib**，原因有三：
+The library **deliberately does not depend on Mathlib**, for three reasons:
 
-1. 环境约束：目标机器上 Mathlib 源码/缓存不可用，从源码构建需要数 GB 空间；
-2. 该用户的其它 Lean 仓库也保持零/轻依赖；
-3. 库真正需要的 Mathlib 内容很少：`Set`、`Relation.Comp/ReflTransGen`、
-   `StateT`/`MonadState`。前两者在 `Rel.lean`/`Nondet.lean` 里以约 200 行复刻，
-   后者用自写的 `ActionM` 实例替代。
+1. environment constraints: on the machine this was developed on, Mathlib sources
+   and cache were unavailable, and building from source needs several GB;
+2. the user's other Lean repositories also keep zero/light dependencies;
+3. the library needs very little from Mathlib: `Set`, `Relation.Comp`/
+   `ReflTransGen`, `StateT`/`MonadState`. The first two are reproduced in
+   `Rel.lean`/`Nondet.lean` in about 200 lines; the latter is replaced by the
+   hand-written `ActionM` instances.
 
-**互操作性没有损失**：`Nondet α` 就是 `α → Prop`，而 Mathlib 的 `Set α` 也是
-`α → Prop`（定义上相同）。因此一旦用户 `import Mathlib`：
+**Nothing is lost in interoperability**: `Nondet α` *is* `α → Prop`, and Mathlib's
+`Set α` is also `α → Prop` (definitionally the same). So once a user writes
+`import Mathlib`:
 
-* `Nondet` 的值可以直接当作 `Set` 使用，`∈`/`⊆`/`⋃` 的 Mathlib 引理可直接套；
-* `Rel` 与 `Relation` 的 `Comp`/`ReflTransGen` 也是同构写法，可互相转换；
-* 若愿意，也可以把 `Action σ` 通过 `rel` 映射到 `σ → Set σ`，把本库的
-  `Preserves` 与 Mathlib 中任何 `Set`-based 规约工具连接起来。
+* `Nondet` values can be used directly as `Set`s, and Mathlib's `∈`/`⊆`/`⋃` lemmas
+  apply as-is;
+* `Rel` and `Relation`'s `Comp`/`ReflTransGen` are isomorphic formulations and can be
+  converted either way;
+* `Action σ` can be mapped through `rel` to `σ → Set σ`, connecting this library's
+  `Preserves` to any `Set`-based verification tooling in Mathlib.
 
-真正的风险只有一个：本库自定义的 `Membership α (Nondet α)` 实例与 Mathlib 的
-`Set` 实例在同一环境下可能造成 `∈` 的实例歧义。规避方式是把
-`Nondet` 的成员记法限制在 scope 内，或直接使用 `s a`。
+There is exactly one real risk: the library's own `Membership α (Nondet α)` instance
+and Mathlib's `Set` instance could make `∈` ambiguous in the same environment. The
+way out is to keep `Nondet` membership notation scoped, or to write `s a` directly.
 
 ---
 
-## 9. 局限与路线图
+## 9. Limits and roadmap
 
-### 9.1 规范层 vs 执行层
+### 9.1 Specification layer vs execution layer
 
-`Nondet` 是 `Prop` 值，因此**不可计算**：本库不能直接运行。若需要执行：
+`Nondet` is `Prop`-valued and therefore **not computable**: this library cannot be
+run directly. If execution is needed:
 
-* 用 `List`/`Multiset` 单子写可执行的 `ActionM`，再用 `List.toSet` 与
-  `rel` 建立对应关系（soundness/completeness）；
-* 或者只为已经确定的动作提供 `Decidable` 实例。
+* write an executable `ActionM` over a `List`/`Multiset` monad and relate it to `rel`
+  via `List.toSet` (soundness/completeness);
+* or provide `Decidable` instances only for actions that are already deterministic.
 
-### 9.2 时序与活性
+### 9.2 Temporal logic and liveness
 
-已实现（`LeanAction/Liveness.lean`），分两层：
+Implemented (`LeanAction/Liveness.lean`), in two layers:
 
-* **时序谓词**：`Behavior σ := Nat → σ`、`Always P b := ∀ n, P (b n)`、
-  `Eventually P b := ∃ n, P (b n)`、`LeadsTo P Q b`（任意时刻起最终），
-  以及 `IsBehavior` / `IsRun`。safety 与时序的桥是 `always_of_safe`：
-  `M.Safe P` + 从初态出发的行为 ⇒ `Always P b`。
-* **公平性下的必然性**：`TakesStep`、`WeakFair`、`StrongFair`
-  （以及 `StrongFair.toWeakFair`），加上秩论证
+* **temporal predicates**: `Behavior σ := Nat → σ`, `Always P b := ∀ n, P (b n)`,
+  `Eventually P b := ∃ n, P (b n)`, `LeadsTo P Q b` (eventually, from any time), plus
+  `IsBehavior` / `IsRun`. The bridge from safety to temporal logic is
+  `always_of_safe`: `M.Safe P` plus a behavior starting in an initial state gives
+  `Always P b`.
+* **inevitability under fairness**: `TakesStep`, `WeakFair`, `StrongFair` (and
+  `StrongFair.toWeakFair`), plus the rank arguments
   `eventually_zero_of_nat_progress_from` / `eventually_zero_of_weakFair(_inv)` /
-  `leadsTo_zero_of_weakFair(_inv)`：若进展动作 `A` 在目标未达时严格减小
-  `μ : σ → Nat`、所有步不增大 `μ`、`A` 在 `μ > 0` 时始终可用，且行为对 `A`
-  弱公平，则 `μ` 最终归零（且"从任意时刻起"成立，因而可写成 `LeadsTo`）。
-  `_inv` 变体只要求在**不变式区域 `I` 内**成立，且 `I` 只在 `μ > 0` 时需要——
-  共享内存协议的 variant 通常**不是全局单调的**（离开临界区会让它回升），
-  这一放宽是那类证明的前提。
-* **循环终止性**：`loop_can_exit` 用 variant 给出 `while` 的"存在终止运行"，
-  与 `Hoare.loop`（偏正确性）组合即得循环的**全正确性**
-  （见 `Examples/Liveness.lean` 的 `countTo3_total`）。
+  `leadsTo_zero_of_weakFair(_inv)`: if the progress action `A` strictly decreases
+  `μ : σ → Nat` while the goal is unreached, no step increases `μ`, `A` is always
+  enabled when `μ > 0`, and the behavior is weakly fair for `A`, then `μ` reaches
+  zero (and "from any time" holds, so it can be packaged as `LeadsTo`). The `_inv`
+  variants only require their hypotheses **inside an invariant region `I`**, and
+  only while `μ > 0` — variants for shared-memory protocols are usually **not
+  globally monotone** (leaving the critical section sends the variant back up), and
+  this relaxation is a prerequisite for such proofs.
+* **termination of loops**: `loop_can_exit` turns a decreasing variant into the
+  "there exists a terminating run" half of termination for `while`; combined with
+  `Hoare.loop` (partial correctness) this gives **total correctness** of a loop (see
+  `countTo3_total` in `Examples/Liveness.lean`).
 
-共享内存协议的活性已经有实例：`Examples/MutexLiveness.lean` 证明
-"进程 1 在区域（等待且持有 turn）内、对 `enter1` 弱公平 ⇒ 最终进入临界区"，
-以及互补方向"在临界区内、对 `exit1` 弱公平 ⇒ 最终离开"（后者还会**消费**
-安全性：区域的稳定性来自 `Mutex.inv_step`）。做法是给 variant 配上手工区域
-`Region`，而不是指望全局单调。
+Liveness of a shared-memory protocol is instantiated in
+`Examples/MutexLiveness.lean`: "if process 1 is in the region (waiting and holding
+the turn) and `enter1` is weakly fair, it eventually enters the critical section",
+and the complementary direction "inside the critical section, weak fairness for
+`exit1` eventually takes it out" (the latter **consumes** safety: the stability of
+the region comes from `Mutex.inv_step`). The approach is to pair the variant with a
+hand-written region `Region`, rather than to hope for global monotonicity.
 
-交错并行的活性也能组合：`interleave_leadsTo` 把"分量最终达到 `P`/`Q`"合成为
-"乘积最终达到 `P ∧ Q`"，其中分量的 `Preserves` 提供**前向稳定性**
-（`forward_stable_of_preserves`），公平性由 `weakFair_fst_of_weakFair` /
-`weakFair_snd_of_weakFair` 从乘积传到分量（`Examples/ParallelLiveness.lean`）。
+Liveness of an interleaving composes as well: `interleave_leadsTo` combines
+"component eventually reaches `P`/`Q`" into "the product eventually reaches
+`P ∧ Q`", where the components' `Preserves` supply **forward stability**
+(`forward_stable_of_preserves`) and fairness is transferred from product to
+component by `weakFair_fst_of_weakFair` / `weakFair_snd_of_weakFair`
+(`Examples/ParallelLiveness.lean`).
 
-仍然没有：`Always`/`Eventually` 的不动点演算与复合规则（如 `Always (Eventually P)`）、
-compassion/公平性不变式、以及**区域自动合成**——目前区域与 variant 都要人工给出
-（`Region` 的"到目标前稳定"要按前缀归纳证明，因为它在全局上并不被保持）。
+Still missing: a fixpoint calculus and composition rules for `Always`/`Eventually`
+(such as `Always (Eventually P)`), compassion / fairness invariants, and
+**automatic synthesis of regions** — today both the region and the variant are given
+by hand (the "stable until the goal" fact for `Region` has to be proved by prefix
+induction, because it is not globally preserved).
 
-### 9.3 其他
+### 9.3 Other
 
-* **Lens 派生**：`deriving` handler 或 `lens!` 宏（见 §5.1）。
-* **并行语义**：已有四层——积状态（`interleave`，§5.2）、共享状态 + 不交足迹
-  （`ViewModule.parallel`）、**rely/guarantee**（`Compatible` +
-  `Preserves.orElse_of_compatible`，用于足迹相交，由 `Examples/RelyGuarantee`
-  与 `Examples/MutexLiveness` 使用）、**同步**（`ViewModule.sync`）。仍缺：
-  (a) **rely 的自动推断/发现**（目前手写，且通常要反复试）；
-  (b) **非状态型 rely 的系统化支持**（本研究里 rely 都是 `σ → σ → Prop`，
-  但如何从代码自动生成/验证一个合适的 rely 没有方法论支持）；
-  (c) **同步组合的活性**（现在只有安全性）；
-  (d) 足迹推断只做到"逐点 `cases`+`rfl`"（`disjoint_auto`），复杂 view 仍需手写。
-* **不变式合成**：现在需要人工给出 `inv`；`Module.safe_of_invariant` 的形状已经
-  适合接入 IC3/Houdini 式的不变式猜测。
-* **`grind` 依赖**：`action_simp` 的兜底是 Lean core 的 `grind`；若某处不适用，
-  退回 `omega`/`simp_all`/人工 `rcases` 即可（示例中都保留了这种退路）。
+* **Lens derivation**: a `deriving` handler or a `lens!` macro (see §5.1).
+* **Parallel semantics**: four layers exist — product state (`interleave`, §5.2),
+  shared state with disjoint footprints (`ViewModule.parallel`),
+  **rely/guarantee** (`Compatible` + `Preserves.orElse_of_compatible`, used when
+  footprints overlap, as in `Examples/RelyGuarantee` and `Examples/MutexLiveness`),
+  and **synchronous** (`ViewModule.sync`). Still missing: (a) **automatic discovery
+  of relies** (today they are written by hand, usually after some trial and error);
+  (b) **systematic support for non-state relies** (every rely here is a
+  `σ → σ → Prop`; how to generate and validate a suitable rely from code has no
+  methodology yet); (c) **liveness for synchronous composition** (only safety so
+  far); (d) footprint inference only reaches the pointwise `cases`+`rfl` case
+  (`disjoint_auto`); complex views still need hand-written proofs.
+* **Invariant synthesis**: `inv` must be supplied by hand today; the shape of
+  `Module.safe_of_invariant` is already suitable for hooking up IC3/Houdini-style
+  invariant guessing.
+* **The `grind` dependency**: `action_simp` falls back to Lean core's `grind`; where
+  that is unsuitable, fall back to `omega`/`simp_all`/manual `rcases` (the examples
+  keep that escape hatch open).
 
 ---
 
-## 10. 验证
+## 10. Verification
 
 ```bash
-lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
+lake build      # Lean v4.33.0, zero dependencies, 25 jobs, no warnings
 ```
 
-已通过编译的示例覆盖：
+Examples that compile, and what they cover:
 
-| 示例 | 覆盖内容 |
+| Example | Coverage |
 | --- | --- |
-| `Examples/Basic` | `do` DSL、`<|>`、不变式 `n = log.length`、`safe_induct`、`while` + `rel_loop`、`View.comp` 嵌套字段聚焦 |
-| `Examples/Parallel` | `Module.interleave` 交错并行、求和不变式、`Refines` + stuttering |
-| `Examples/Mutex` | 共享变量协议（turn-based 互斥）：`guard` + 6 路进程步、混合两进程的不变式、`safe_induct`/`safe_of_invariant`、构造性可达性、`not_rel_guard_seq` 证明"被阻塞" |
-| `Examples/Hoare` | 偏正确性：`Hoare.iterate`（算术后置条件）、`Hoare.loop`（while + 退出条件）、`Hoare.nondet`、`Hoare.focusView`（聚焦三元组） |
-| `Examples/DataRefinement` | 非恒等抽象映射、安全性沿精化传递、实现层私有不变式（`count = log.length`）、`Refines.reach` 把具体运行提升为抽象运行 |
-| `Examples/Machine` | 程序驻留状态的栈机：`choiceAll` 做指令分派、对**任意程序**成立的安全性（代码不增长）、具体运行 `[push 2, push 3, add] → [5]` |
-| `Examples/Liveness` | 公平性下的必然性（计数器必达 3）、**不公平则活性失效**的显式定理（stuttering 行为）、safety→`Always` 的桥（含互斥协议的 `Always`）、`while` 终止性与循环全正确性 |
-| `Examples/MutexLiveness` | 共享内存协议的活性：区域内的 variant（非全局单调）、"进入临界区"与"离开临界区"两个方向；后者由安全性（互斥不变式）提供区域稳定性 |
-| `Examples/ParallelLiveness` | 交错并行的活性组合：分量活性（经投影 + 公平性传递 + 序列级秩论证）合成乘积活性，反面例子说明右分量公平假设不可省 |
-| `Examples/Frame` | 共享 record 上的不交足迹组合：框架条件作为证明义务、框架定理给出组合安全性（每半只在自己的状态类型上证）、组合活性、同步组合（`sync`），以及 `¬ Disjoint` 说明了 mutex 为何超出本层 |
-| `Examples/RelyGuarantee` | 足迹**相交**时用接口组合：`Compatible` + `Preserves.orElse_of_compatible`（每个分量只对自己的接口负责）、`¬ Disjoint` 说明框架层为何不适用 |
+| `Examples/Basic` | `do` DSL, `<|>`, the invariant `n = log.length`, `safe_induct`, `while` + `rel_loop`, nested-field focus via `View.comp` |
+| `Examples/Parallel` | `Module.interleave`, a sum invariant, `Refines` with stuttering |
+| `Examples/Mutex` | shared-variable protocol (turn-based mutual exclusion): `guard` + six process steps, an invariant mixing both processes, `safe_induct`/`safe_of_invariant`, constructive reachability, `not_rel_guard_seq` to prove "blocked" |
+| `Examples/Hoare` | partial correctness: `Hoare.iterate` (arithmetic post-condition), `Hoare.loop` (`while` + exit condition), `Hoare.nondet`, `Hoare.focusView` (focused triples) |
+| `Examples/DataRefinement` | non-identity abstraction map, safety transfer along refinement, an implementation-only invariant (`count = log.length`), `Refines.reach` lifting concrete runs |
+| `Examples/Machine` | stack machine with the program in the state: `choiceAll` dispatch, safety for **every** program (the code never grows), the concrete run `[push 2, push 3, add] → [5]` |
+| `Examples/Liveness` | inevitability under fairness (a counter must reach 3), an explicit theorem that **liveness fails without fairness** (a stuttering behavior), the safety→`Always` bridge (including `Always`-form mutual exclusion), `while` termination and loop total correctness |
+| `Examples/MutexLiveness` | liveness of the shared-memory protocol: a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant) |
+| `Examples/ParallelLiveness` | liveness composition for interleaving: component liveness (projection + fairness transfer + sequence-level rank argument) into product liveness, with a counterexample showing the fairness hypothesis for the right component cannot be dropped |
+| `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous composition (`sync`), and `¬ Disjoint` explaining why mutex is outside this layer |
+| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), `¬ Disjoint` showing why the frame layer cannot do it |
 
 ---
 
-## 11. 通过示例探索：表达力与实用性
+## 11. Exploring expressiveness and practicality through examples
 
-本节是"写例子时真实发生了什么"的记录（含踩坑），比照 §3–§7 的设计预期。
+This section is the record of what actually happened while writing the examples
+(including the traps), measured against the expectations of §3–§7.
 
-### 11.1 示例倒逼出来的库能力
+### 11.1 Library capabilities the examples forced into existence
 
-| 缺口 | 新增 |
+| Gap | Addition |
 | --- | --- |
-| `while` 的不变性无从下手 | `Preserves.loop`、`loop_invariant` |
-| 偏正确性只覆盖 `skip/seq/guard/nondet` | `Hoare.update`、`Hoare.set`、`Hoare.iterate`、`Hoare.loop` |
-| "守卫失败 ⇒ 这一步不可达"（互斥里证明另一进程被阻塞） | `not_rel_guard_seq` |
-| 交错并行的安全性无法组合 | `interleave_init`、`reach_interleave_fst/snd`、`interleave_safe` |
-| 顺序组合没有记法（只能写 `seq A B` 或 `do`） | `;;`（`infixl:60`，作用在 `seq` 上） |
+| no way to state a `while` invariant | `Preserves.loop`, `loop_invariant` |
+| partial correctness only covered `skip/seq/guard/nondet` | `Hoare.update`, `Hoare.set`, `Hoare.iterate`, `Hoare.loop` |
+| "a failed guard makes this step unreachable" (proving a process blocked in the mutex) | `not_rel_guard_seq` |
+| safety of an interleaving could not be composed | `interleave_init`, `reach_interleave_fst/snd`, `interleave_safe` |
+| no notation for sequential composition (`seq A B` or `do`) | `;;` (`infixl:60`, over `seq`) |
 
-其中 `interleave_safe` 最有价值：它是**交错并行的安全性组合定理**——
-`M.Safe P` 与 `N.Safe Q` 蕴含 `(M.interleave N).Safe (P ∘ fst ∧ Q ∘ snd)`，
-证明只依赖"可达性在两个投影下分别下降"（`reach_interleave_fst/snd`）。
+The most valuable of these is `interleave_safe`: the **safety composition theorem
+for interleaving** — `M.Safe P` and `N.Safe Q` imply
+`(M.interleave N).Safe (P ∘ fst ∧ Q ∘ snd)`, and the proof only needs "reachability
+descends through the two projections" (`reach_interleave_fst/snd`).
 
-### 11.2 顺手的地方
+### 11.2 What felt natural
 
-* **协议规模不是问题**：Mutex 的 6 路非确定步（含两条改写共享变量 `turn` 的 `exit`）
-  用 `inv_induct; simp only [...]; action_simp; grind` 一次通过，不需要手工 `rcases`。
-* **三段式不变式**（`init ⊆ I` → `Preserves next I` → `I ⊆ P`）与真实证明习惯吻合，
-  `Module.safe_of_invariant` 直接给出这个形状。
-* **构造性可达性**：`Reach.single`/`Reach.step` 链 + 每步一个 `action_simp` 引理，
-  可以同时证明"什么能发生"（`p1_can_enter`）与"什么不能发生"（`p2_blocked_...`）。
-* **精化与实现细节并存**：抽象层用 `Refines.safe` 拿接口性质，实现层用 `Preserves`
-  证明日志长度这类抽象层看不见的性质，两者互不干扰。
-* **程序驻留状态的分派**：`choiceAll` + `guard (code.head? = some i)` 让"取当前指令"
-  不需要对状态做依赖模式匹配；`Instr` 只是普通归纳类型，分派靠存在量词的见证。
+* **Protocol size is not a problem**: the mutex protocol's six-way nondeterministic
+  step (including two `exit`s that rewrite the shared `turn`) goes through in one
+  shot with `inv_induct; simp only [...]; action_simp; grind`, no manual `rcases`.
+* **The three-stage invariant** (`init ⊆ I` → `Preserves next I` → `I ⊆ P`) matches
+  real proof habits and `Module.safe_of_invariant` provides exactly that shape.
+* **Constructive reachability**: a chain of `Reach.single`/`Reach.step` with one
+  `action_simp` lemma per step proves both what *can* happen (`p1_can_enter`) and
+  what *cannot* (`p2_blocked_…`).
+* **Refinement and implementation details coexist**: the abstract layer uses
+  `Refines.safe` for interface properties while the implementation proves
+  log-length invariants invisible to the abstraction, with no interference.
+* **Dispatch on a program stored in the state**: `choiceAll` +
+  `guard (code.head? = some i)` removes the need for dependent pattern matching on
+  the state; `Instr` stays an ordinary inductive type and dispatch goes through an
+  existential witness.
 
-### 11.3 别扭之处与已做的改进
+### 11.3 Awkward spots, and the changes made
 
-1. **`inv_induct` 曾内置 `try grind`，会静默证完整个目标**，随后用户写的
-   `simp only [...]`/`grind` 立刻报 `No goals to be solved`，且很难从报错定位。
-   已改为 `inv_induct = unfold Preserves; intro …; action_simp`（不调用 `grind`），
-   行为可预测；需要 `grind` 的地方明确写出来。
-2. **`apply L (P' := …)` 在"被指定的隐式参数不出现在结论里"时不可靠**
-   （`Hoare.focusView`、`Module.safe_of_invariant` 都踩到）。改用
-   `refine L (…) ?_ ?_ ?_` 或项模式；这是 Lean 的 `apply` 目标导向统一使然。
-3. **把 `rel` 假设"降级"为具体等式不能靠 `have`**：`rel (update f) s s'` 与
-   `s' = f s` 之间隔着 `Done`/`Prod.mk.injEq`，**不是** defeq。必须先
-   `simp only [f, Module.next, rel_update] at h`，再当等式用。
-4. **状态里的 `match` 分支会遮蔽同名变量**：`match m.stack with | a::b::rest => … | s => …`
-   里的 `s` 让后续 `cases m.stack` 找不到 `m`。规避：把中间状态也用同名变量接住
-   （`obtain ⟨m, ⟨-, rfl⟩, h⟩ := h`），或把"逐指令事实"先抽成独立引理
-   （`execInstr_code_shrinks`）——后者更稳。
-5. **`decide`/`native_decide` 对 `rel` 目标不可用**：`Decidable (rel A s s')` 无法合成，
-   因为 `rel` 是函数、实例搜索不会展开它。具体计算改用
-   `simp only [...] <;> first | rfl | grind`。
-6. **`grind` 的表现对环境敏感**：Machine 例子里同样的目标，`deriving DecidableEq`
-   与否会影响结果；`code_never_grows` 一次成功、后来同类目标失败，最终靠把
-   算术抽成 `execInstr_code_shrinks` 引理才稳定。**结论：关键证明不要全押在
-   `grind` 上，把可手工的部分（算术、列表长度）抽成引理。**
-7. **共享变量并行不是 `interleave` 的适用面**：Mutex 的 `turn` 同时被两个进程读写，
-   不能用"两个独立模块取积"表达，只能手写一个全局 record + 进程步的 `<|>`。
-   这界定了 `interleave` 的语义：**独立分量**的异步组合；共享内存需要框架/分离层。
-8. **循环的终止性仍无**：`Preserves.loop`/`Hoare.loop` 只做偏正确性；活性（fairness,
-   `Eventually`）不在当前范围内（§9.2）。
+1. **`inv_induct` used to include `try grind`, silently proving the whole goal**;
+   the user's following `simp only [...]`/`grind` then reported
+   `No goals to be solved`, and the message pointed nowhere near the cause. It is
+   now `inv_induct = unfold Preserves; intro …; action_simp` (no `grind`), so it is
+   predictable; places that need `grind` say so explicitly.
+2. **`apply L (P' := …)` is unreliable when the named implicit argument does not
+   occur in the conclusion** (hit with `Hoare.focusView` and
+   `Module.safe_of_invariant`). Use `refine L (…) ?_ ?_ ?_` or term mode; this is a
+   consequence of `apply`'s goal-directed unification.
+3. **Turning a `rel` hypothesis into a concrete equality cannot be done with
+   `have`**: `rel (update f) s s'` and `s' = f s` are separated by
+   `Done`/`Prod.mk.injEq`, so they are **not** defeq. One must first
+   `simp only [f, Module.next, rel_update] at h` and only then treat it as an
+   equality.
+4. **A `match` binder in the state shadows same-named variables**:
+   `match m.stack with | a::b::rest => … | s => …` introduces an `s` that makes a
+   later `cases m.stack` unable to find `m`. Workarounds: catch the intermediate
+   state in a same-named variable (`obtain ⟨m, ⟨-, rfl⟩, h⟩ := h`), or — more
+   robustly — factor the per-instruction fact into its own lemma
+   (`execInstr_code_shrinks`).
+5. **`decide`/`native_decide` do not work on `rel` goals**: `Decidable (rel A s s')`
+   cannot be synthesized, because `rel` is a function and instance search does not
+   unfold it. Concrete computations use
+   `simp only [...] <;> first | rfl | grind` instead.
+6. **`grind`'s behaviour is environment-sensitive**: for the same goal in the machine
+   example, having `deriving DecidableEq` or not changed the outcome;
+   `code_never_grows` succeeded once and failed later on a similar goal, and only
+   became stable after extracting the arithmetic into `execInstr_code_shrinks`.
+   **Conclusion: do not bet a critical proof entirely on `grind`; extract the parts
+   one can do by hand (arithmetic, list lengths) into lemmas.**
+7. **Shared-variable parallelism is not what `interleave` is for**: the mutex `turn`
+   is read and written by both processes, so "take the product of two independent
+   modules" cannot express it; one has to write a global record plus an interleaving
+   of process steps. This delimits `interleave`'s meaning: asynchronous composition
+   of **independent components**; shared memory needs a frame/separation layer.
+8. **Loop termination was still absent**: `Preserves.loop`/`Hoare.loop` only give
+   partial correctness; liveness (fairness, `Eventually`) was out of scope (§9.2).
 
-### 11.4 活性层带来的额外经验
+### 11.4 Extra lessons from the liveness layer
 
-* **核心引理不能用 `Nat.find`**：`import Std` 下没有 `Nat.find/find_spec/min'`，
-  也没有 `Nat.strong_induction_on`、`Nat.le_induction`。`LeanAction` 零依赖的
-  约束因此把秩论证改成 **`Nat.strongRecOn` 上的良基递归**：从"当前秩 > 0"
-  出发，用公平性产生一次严格下降，再对更小的秩递归（`eventually_zero_of_nat_progress_from`）。
-  这反而比"取序列最小值"更短，也不需要最小元存在性的引理。
-* **`by_contra` 不在 core**（属于 Mathlib）：活性的反证风格要改成
-  `by_cases` + `absurd`（见 `eventually_iff_not_always_not`）。
-* **公平性必须被显式否证一次**：`Examples/Liveness.stuck` 给出同一模块的
-  stuttering 行为，并证明它不是弱公平的、且永不达目标
-  （`liveness_needs_fairness`）。把"没有公平性就没有活性"写成定理，比在文档里
-  声明更有说服力，也避免把公平性当成技术细节。
-* **全正确性 = 偏正确性 + 终止性**：`Hoare.loop`（偏正确性）与
-  `loop_can_exit`（存在终止运行）拼起来就是 `countTo3_total`；这条拼装关系
-  验证了 proof 层与 liveness 层的接口设计。
-* **`LeadsTo` 的量化顺序很关键**：`eventually_zero_of_weakFair` 的结论先做成
-  `∀ n, ∃ N ≥ n, …`，再包装成 `LeadsTo`；否则只能得到"从时刻 0 出发"的弱形式。
-* **状态型公平 vs 关系型公平**：库里的"taken"定义为
-  `rel A (b n) (b (n+1))`（该步满足 `A` 的关系），因此对 `A <|> B`
-  的模块，"`A` 一直可用但环境始终走 `B`"正好是弱公平被违反的情形——
-  这也是 `stuck` 能被否证的原因。
+* **The core lemma cannot use `Nat.find`**: with `import Std` there is no
+  `Nat.find/find_spec/min'`, nor `Nat.strong_induction_on`, nor `Nat.le_induction`.
+  The zero-dependency constraint therefore turned the rank argument into
+  **well-founded recursion on `Nat.strongRecOn`**: start from "rank > 0", use
+  fairness to produce one strict decrease, and recurse on the smaller rank
+  (`eventually_zero_of_nat_progress_from`). This is in fact shorter than "take the
+  minimum of the sequence", and it does not need a least-element existence lemma.
+* **`by_contra` is not in core** (it is Mathlib): the proof-by-contradiction style
+  for liveness had to become `by_cases` + `absurd` (see
+  `eventually_iff_not_always_not`).
+* **Fairness has to be refuted once, explicitly**: `Examples/Liveness.stuck` gives a
+  stuttering behavior of the very same module and proves that it is not weakly fair
+  and never reaches the goal (`liveness_needs_fairness`). Writing "no fairness, no
+  liveness" as a theorem is more convincing than asserting it in prose, and it
+  prevents fairness from being treated as a technicality.
+* **Total correctness = partial correctness + termination**: `Hoare.loop` (partial
+  correctness) and `loop_can_exit` (a terminating run exists) assemble into
+  `countTo3_total`; this assembly validates the interface between the proof layer
+  and the liveness layer.
+* **The quantifier order in `LeadsTo` matters**: the conclusion of
+  `eventually_zero_of_weakFair` is first shaped as `∀ n, ∃ N ≥ n, …` and only then
+  packaged as `LeadsTo`; otherwise one only gets the weak "starting at time 0" form.
+* **State-based vs relation-based fairness**: here "taken" means
+  `rel A (b n) (b (n+1))` (the step satisfies `A`'s relation), so for a module
+  `A <|> B`, "`A` is always enabled but the environment always takes `B`" is exactly
+  a violation of weak fairness — which is why `stuck` can be refuted.
 
-### 11.5 共享内存协议活性的实现经验
+### 11.5 Lessons from liveness of a shared-memory protocol
 
-把活性推到 `Mutex` 这样的共享变量协议时，暴露了三件事：
+Pushing liveness to a shared-variable protocol like `Mutex` exposed three things:
 
-1. **variant 不是全局单调的**。`rank s = if s.pc1 = 2 then 0 else 1` 在"离开临界区"
-   这一步会从 `0` 回到 `1`。原来的秩论证要求全局 `μ s' ≤ μ s`，因此必须放宽成
-   "只在不变式区域 `I` 内、且只在 `μ > 0` 时要求单调、要求 `A` 可用"
-   （`eventually_zero_of_weakFair_inv`）。这个放宽不是形式上的：`hI` 只在
-   `μ > 0` 时需要，正对应"目标一旦达成，后续状态怎样都无所谓"。
-2. **区域在全局上并不被保持**，所以 `Preserves`/`always_of_preserves` 用不上：
-   `Region ∨ pc1 = 2` 会被 `exit1` 破坏（`pc1` 变成 `0`）。真正成立的是
-   **前缀形式**："只要还没进过临界区，就一直留在区域内"，它按行为前缀归纳证明
-   （`region_until_goal`），并在证明里用"下一步 `pc1 ≠ 2`"排掉 `enter1` 这一支。
-   这也让 `eventually_enter1` 的证明要以 `by_cases (∃ N, pc1 = 2)` 开场：
-   已达成直接收工，未达成才有"全程 `μ > 0`"从而区域成立。
-3. **安全性与活性对模型的要求不同**。原来的 `Mutex` 例子把 `req1`（请求锁）写成
-   无守卫的 `update (pc1 := 1)`：安全性照样成立（它不动 `turn`），但一个处于临界区的
-   进程可以"重新请求"退回等待，区域因此不再稳定，活性证不出来。补上
-   `guard (pc1 = 0)` 后一切顺畅。**结论：安全性宽松的建模会在活性处露馅。**
+1. **The variant is not globally monotone.**
+   `rank s = if s.pc1 = 2 then 0 else 1` goes back from `0` to `1` on the
+   "leave the critical section" step. The original rank argument demanded a global
+   `μ s' ≤ μ s`, so it had to be relaxed to "only inside the invariant region `I`,
+   only while `μ > 0`, and only then monotone/enabled"
+   (`eventually_zero_of_weakFair_inv`). The relaxation is not cosmetic: `hI` is only
+   needed while `μ > 0`, which corresponds exactly to "once the goal is reached it
+   does not matter what happens next".
+2. **The region is not globally preserved**, so `Preserves`/`always_of_preserves` do
+   not apply: `Region ∨ pc1 = 2` is broken by `exit1` (`pc1` becomes `0`). What does
+   hold is the **prefix form**: "as long as the critical section has not been
+   entered, the state stays in the region", proved by induction over the behavior
+   prefix (`region_until_goal`), where the "next step is not `pc1 = 2`" hypothesis
+   rules out the `enter1` branch. This is also why `eventually_enter1` has to start
+   with `by_cases (∃ N, pc1 = 2)`: if the goal is already reached, one is done;
+   otherwise "`μ > 0` throughout" holds and hence the region does.
+3. **Safety and liveness have different demands on the model.** The original `Mutex`
+   example wrote `req1` (request the lock) as the unguarded
+   `update (pc1 := 1)`: safety was unaffected (it does not touch `turn`), but a
+   process inside the critical section could "re-request" and drop back to waiting,
+   which destroys the stability of the region, so liveness could not be proved.
+   Adding `guard (pc1 = 0)` made everything go through. **Conclusion: a model that is
+   permissive enough for safety will betray you at liveness.**
 
-另外，互补方向 `leadsTo_exit1`（离开临界区）是活性**消费**安全性的例子：
-"在临界区 ⇒ 持有 turn" 这一条来自 `Mutex.inv_step` + `always_of_preserves`，
-没有它就无法排除另一进程的步骤，variant 的单调性也就证不出来。
+The complementary direction `leadsTo_exit1` (leaving the critical section) is an
+example of liveness **consuming** safety: the fact "in the critical section implies
+holding the turn" comes from `Mutex.inv_step` + `always_of_preserves`, and without
+it the other process's steps cannot be ruled out and the variant's monotonicity
+cannot be established.
 
-### 11.6 生成器：term 宏为什么不行，command 为什么行
+### 11.6 Generators: why a term macro fails and a command succeeds
 
-`Lens`/`View` 的自动生成绕了两次弯路，最后用 command 解决：
+Automatic generation of `Lens`/`View` took two detours before a command solved it:
 
-* **term 宏两次失败**（`lens!`、`view!`）。`{ s with f := v }` 的字段位置是
-  `Lean.Parser.Term.structInstLVal` 语法节点，而 term 宏的反引用只能产出
-  `ident`；把它硬塞进该位置后，**宏定义处类型检查通过**，展开结果却在**使用处**
-  报 `unexpected syntax`——失败点与病因分离，极易误判。
-* **command 方案**：把 getter/setter 当字符串解析
-  （`Parser.runParserCategory env `term "fun s v => { s with f := v }"`），
-  得到良构节点，再 `elabCommand` 发出 `def`。这条路一次就通。
-* 实现里踩到两个具体坑，都写进了命令的文档：
-  1. **自定义 command 前不能有 doc comment**：`/-- … -/` 只会挂到声明类命令
-     （`def`/`theorem`/`structure`…）上，`/-- … -/ view_defs Foo` 直接是语法错误；
-  2. **`elabCommand` 会给声明名加当前 namespace 前缀**：所以我把它生成的名字
-     相对化（`Name.replacePrefix currNs anonymous`），否则会落到
-     `Ns.Ns.Struct.fieldView`；结构不在当前 namespace 内时命令直接报错。
-  （这两条都不是"文档型"注意事项，而是会让用户莫名其妙失败的约束，因此必须
-  在命令的 docstring 里写明。）
-* **`deriving` 路径**随后补上，并暴露了另外三个元编程细节：
-  1. 框架 API 是 `Lean.Elab.registerDerivingHandler`（不是 `Lean.Elab.Deriving.*`），
-     `DerivingHandler := Array Name → CommandElabM Bool`，返回 `true` 表示
-     "已处理"，从而**不**生成默认实例；注册名必须是**完全限定**的类名
-     （`LeanAction.ViewFields`），只写短名匹配不上；
-  2. `deriving X` 要求 `X` 能在环境中解析，所以需要一个**标记类**
-     （`class ViewFields (σ : Type u)`）——没人把它当真的类型类用，handler 里
-     返回 `true` 抑制实例生成；
-  3. **custom command 里的 `liftTermElabM (Term.elabType …)` 看不到 section
-     variable**，所以命令不能用 `elabType` 来提取结构名（那会报
-     "Unknown identifier α"，但**同时**又把 `def` 建出来，因为 `elabCommand`
-     是把声明当作声明来展开的，那里 section variable 是可见的）。改成**纯语法地**
-     找最左标识符 + 候选名（原样 / 当前 namespace 前缀 / 去掉 `_root_.`），
-     并跳过 `anonymous` 标识符节点。
+* **Term macros failed twice** (`lens!`, `view!`). The field position in
+  `{ s with f := v }` is a `Lean.Parser.Term.structInstLVal` syntax node, while a
+  term macro's antiquotation can only produce an `ident`; forcing it into that
+  position means **the macro definition type-checks** but the expansion is rejected
+  at **every use site** with `unexpected syntax` — the failure point and the cause
+  are separated, which makes it very easy to misdiagnose.
+* **The command approach**: parse the getter/setter as strings
+  (`Parser.runParserCategory env `term "fun s v => { s with f := v }"`), obtaining
+  well-formed nodes, then `elabCommand` to emit the `def`. This worked first try.
+* Two concrete traps were hit in the implementation, both now documented in the
+  command's docstring:
+  1. **a custom command cannot be preceded by a doc comment**: `/-- … -/` only
+     attaches to declaration commands (`def`/`theorem`/`structure`…), so
+     `/-- … -/ view_defs Foo` is a syntax error;
+  2. **`elabCommand` prefixes declaration names with the current namespace**, so the
+     generated name is relativized (`Name.replacePrefix currNs anonymous`); otherwise
+     it lands at `Ns.Ns.Struct.fieldView`. If the structure is not inside the current
+     namespace, the command fails outright.
+  (Neither of these is a "documentation-type" note: both make users fail in
+  mysterious ways, so they belong in the docstring.)
+* **The `deriving` path** came afterwards and exposed three more metaprogramming
+  details:
+  1. the framework API is `Lean.Elab.registerDerivingHandler` (not
+     `Lean.Elab.Deriving.*`), with
+     `DerivingHandler := Array Name → CommandElabM Bool`; returning `true` means
+     "handled", so **no** default instance is generated; and the registration name
+     must be the **fully qualified** class name (`LeanAction.ViewFields`) — the short
+     name simply does not match;
+  2. `deriving X` requires `X` to resolve in the environment, hence a **marker class**
+     (`class ViewFields (σ : Type u)`) — nobody uses it as a real type class, and the
+     handler returns `true` to suppress instance generation;
+  3. **`liftTermElabM (Term.elabType …)` inside a custom command cannot see section
+     variables**, so the command cannot use `elabType` to extract the structure name
+     (it logs "Unknown identifier α" while **still** creating the `def`, because
+     `elabCommand` elaborates declarations — where section variables *are* visible).
+     The fix is to read the structure name **purely syntactically**: find the
+     leftmost identifier, try the candidates (as written / under the current
+     namespace / with `_root_.` stripped), and skip `anonymous` identifier nodes.
 
-### 11.7 并行活性组合：投影会 stutter
+### 11.7 Composing liveness over interleaving: projections stutter
 
-把 `interleave_safe` 的思路搬到活性上，暴露了一个结构性差别：
+Moving the idea of `interleave_safe` over to liveness revealed a structural
+difference:
 
-* **投影不是分量模块的行为**。把乘积行为投影到第一分量，另一分量的步在该分量上
-  表现为**不动**（stutter），而 `IsBehavior M` 要求每一步都由 `M.next` 关联，
-  所以投影不是 `IsBehavior M`。因此模块级秩定理（`eventually_zero_of_weakFair*`）
-  在这里不适用，秩论证必须下沉到**序列级**（`eventually_zero_of_seq`，只需
-  "秩不增 + 公平 + 进展动作可用"这些逐点事实），模块级版本随后成为它的推论。
-* **合取两个"最终"需要稳定性**。"最终 `P`"与"最终 `Q`"取较晚的时刻得到
-  `P ∧ Q`，前提是 `P`/`Q` 沿行为**前向稳定**（`forward_stable_of_preserves`
-  从 `Preserves` 给出）。这就是"安全性 + 活性 ⇒ 合取活性"的具体形态，也正是
-  `interleave_leadsTo` 里那两个 `Preserves` 假设的用途——在例子里它们退化成
-  "计数器只增不减"这种显然的目标单调性。
-* **公平性沿投影传递**：`weakFair_fst_of_weakFair` / `weakFair_snd_of_weakFair`
-  只需要"分量动作可用 ↔ 提升动作可用"这条对应（即 `rel_liftLeft`/`rel_liftRight`
-  的展开），与 stutter 无关。
-* **反面例子**：`leftOnly`（只动左分量）是乘积的合法行为、甚至对左分量的提升动作
-  弱公平，却永远达不到 `p.1 ≥ 3 ∧ p.2 ≥ 4`——右分量的公平假设确实不可省。
+* **A projection is not a behavior of the component module.** Projecting a product
+  behavior onto the first component makes the other component's steps appear as
+  **stuttering** steps, whereas `IsBehavior M` requires every consecutive pair to be
+  related by `M.next`. Hence the module-level rank theorems
+  (`eventually_zero_of_weakFair*`) do not apply here, and the rank argument has to be
+  pushed down to the **sequence level** (`eventually_zero_of_seq`, which needs only
+  the pointwise facts "rank does not increase + fairness + the progress action is
+  enabled"); the module-level versions then become corollaries.
+* **Conjoining two "eventually"s needs stability.** Taking the later of "eventually
+  `P`" and "eventually `Q`" yields `P ∧ Q` only if `P`/`Q` are **forward stable**
+  along the behavior (`forward_stable_of_preserves`, from `Preserves`). This is the
+  concrete form of "safety + liveness ⇒ conjunctive liveness", and it is exactly what
+  the two `Preserves` hypotheses in `interleave_leadsTo` are for — in the examples
+  they degenerate to the obvious monotonicity of the targets ("the counters only
+  grow").
+* **Fairness transfers along projections**: `weakFair_fst_of_weakFair` /
+  `weakFair_snd_of_weakFair` need only the correspondence "component action enabled
+  ↔ lifted action enabled" (i.e. the unfolding of
+  `rel_liftLeft`/`rel_liftRight`), which is independent of stuttering.
+* **A counterexample**: `leftOnly` (only the left component ever moves) is a
+  legitimate behavior of the product and is even weakly fair for the left lifted
+  action, yet it never reaches `p.1 ≥ 3 ∧ p.2 ≥ 4` — so the fairness hypothesis for
+  the right component really cannot be dropped.
 
-### 11.8 框架条件显式化：经验
+### 11.8 Making the frame condition explicit: lessons
 
-* **`ViewModule` 只需要 `get_set`**，不需要完整 lens 定律：框架定理只用到
-  "写进视图再读回来"这一条，所以足迹比 `Lens` 更宽松（`View` + 一条定律）。
-  这降低了使用门槛：用户不必证 `set_get`/`set_set` 就能用组合定理。（我一开始
-  用 `Lens` 作足迹，后来发现不必要。）
-* **不要给 `Lens → View` 加 `Coe` 实例**：目标类型未知时 Lean 会**静默地不插入
-  coercion**，于是 `Disjoint M₁.view M₂.view` 报出的错是"`M₂.view` 是 `Lens` 但期望
-  `View ?m`"——很难从字面猜到根因。改成显式 `View.ofLens`（或让足迹类型本身就是
-  `View`）就干净了。
-* **`parallel` 不是语法上可交换的**：`M₁ ∥ M₂` 的 `next` 是 `lift₁ <|> lift₂`，
-  与 `lift₂ <|> lift₁` 只是逻辑等价。所以"把同一个泛型分量活性引理套到第二个分量
-  上"需要一条小引理 `isBehavior_parallel_swap`（或者 `Module` 层面的交换律）。
-  这类"语义对称、语法不对称"的地方，泛型引理的实例化总要额外交接一次。
-* **Lean 的 `rw` 只做语法匹配**，在这层撞了两次同一个坑：
-  1. beta-redex：目标写的是 `(fun s => P (v.get s)) s'`，`rw [h]` 找不到 `v.get s'`
-     → 先用 `change P (v.get s')` 打开；
-  2. 结构常量的投影：泛型引理给的是 `C₁.view.get`，而目标里已是 `fp₁.get`
-     → 用 `have h' : <显式类型的等式> := h`（`have` 走 defeq，`rw` 不走）。
-  最终我把示例里的活性引理写成对 `M.view` 泛型、实例化时传 `C₁`/`C₂`，就把第 2 类
-  摩擦集中到了一处。
-* **边界写成定理最有说服力**：`mutex_not_disjoint` 让"这个协议不能用框架组合"不再
-  是一句断言，而是一个一行的反例证明——这和上一轮 `liveness_needs_fairness` 是同一
-  个套路：把"做不到"形式化。
+* **`ViewModule` needs only `get_set`**, not the full lens laws: the frame theorem
+  uses only "write into the view and read it back", so the footprint is weaker than a
+  `Lens` (`View` + one law). That lowers the entry cost: users need not prove
+  `set_get`/`set_set` to use the composition theorems. (I started with `Lens` as the
+  footprint and later found it unnecessary.)
+* **Do not add a `Lens → View` `Coe` instance**: when the target type is unknown,
+  Lean **silently does not insert the coercion**, so `Disjoint M₁.view M₂.view`
+  reports "`M₂.view` has type `Lens` but is expected to have type `View ?m`" — very
+  hard to trace back to the root cause. Writing `View.ofLens` explicitly (or making
+  the footprint type itself a `View`) is clean.
+* **`parallel` is not syntactically commutative**: the `next` of `M₁ ∥ M₂` is
+  `lift₁ <|> lift₂`, which is only *logically* equivalent to `lift₂ <|> lift₁`. So
+  applying the same generic component-liveness lemma to the second component needs a
+  small lemma `isBehavior_parallel_swap` (or a `Module`-level commutativity law).
+  Wherever semantics are symmetric but syntax is not, instantiating a generic lemma
+  costs one extra hand-off.
+* **Lean's `rw` only matches syntactically**, and this layer hit the same trap twice:
+  1. beta-redexes: the goal says `(fun s => P (v.get s)) s'`, so `rw [h]` cannot find
+     `v.get s'` → open it with `change P (v.get s')` first;
+  2. projections of structure constants: the generic lemma produces `C₁.view.get`
+     while the goal already has `fp₁.get` → use
+     `have h' : <equality with an explicit type> := h` (`have` goes through defeq,
+     `rw` does not).
+  In the end I wrote the example's liveness lemmas generically over `M.view` and
+  instantiated them with `C₁`/`C₂`, which concentrated the second kind of friction in
+  one place.
+* **Stating the boundary as a theorem is most convincing**: `mutex_not_disjoint`
+  turns "this protocol cannot be composed by the frame layer" from an assertion into
+  a one-line counterexample — the same trick as `liveness_needs_fairness` from the
+  previous round: **formalize the "cannot be done"**.
 
-### 11.9 rely/guarantee 与同步组合：经验
+### 11.9 Rely/guarantee and synchronous composition: lessons
 
-* **R/G 在"前缀性质"上才真正省事。** `Examples/MutexLiveness` 里原来的
-  `region_until_goal` 是"六路 `action_simp; grind` + 手写前缀归纳"；换成
-  R/G 之后是两条各自只看一侧的接口引理（`region_steps1` 是分量自己的保证、
-  `region_steps2` 是环境的 rely，后者完全不提 `steps1`）+ 库里的
-  `relyGuarantee_until` 负责归纳。而 mutex 的**安全性**（`inv_step`）用 R/G 写
-  并不更短——见下一条。
-* **对状态不变式，R/G 换来的是模块化，不是更短。** 我试着重做一个"共享 cell × 两个
-  分量"的安全例子，结论很清楚：若某个分量的**无守卫**步能从某个 `I` 状态破坏 `I`，
-  任何 rely 都救不了它——rely 约束的是**环境的转移**，不是**当前状态**
-  （这条"不可行性"其实正是组合规则的可靠性所在）。所以安全例子的价值在于
-  *义务只提接口*（`Examples/RelyGuarantee` 里两个方向各自只看对方的分量），
-  而不是证明长度。
-* **`sync` 又踩了一次同一个 defeq 坑**：`rel` 的等式是 `z = (Done.mk, x)` 而
-  用户想说的是 `s' = x`，两者需要 `Prod.mk.injEq`，不是 defeq。这是第三次
-  （`rel_focusView`、`rel_lift`、现在 `rel_sync`），处理方式也一样：`unfold rel` 后
-  手动 `rintro` + `congrArg Prod.snd`。**结论**：给新动作写"关系展开"引理时，默认
-  不要指望 `Iff.rfl`，先想清楚 `Done`/`Prod` 那一层。
-* **`<|>` 出现在期望类型是 `Prop` 的位置会解析成 `HOrElse Prop ...`**：
-  `theorem next_eq : next = a <|> b <|> c := ...` 会报
-  "failed to synthesize HOrElse Prop (Action St)"。把这类"等价性"引理写成
-  `rel` 层面的 `↔`（`rel next s s' ↔ rel (a <|> b) s s'`）就不会触发——这也更贴近
-  这个库的语义层。顺便，`Action.ext` 这种"命名空间前缀"写法也不可行（`Action`
-  是 notation 不是命名空间）。
-* **`sync` 需要 `abbrev` 而不是 `def`**：`def` 下 `Iff.rfl` 无法把 `rel (M₁.sync M₂) s s'`
-  归约到展开形式（`rel` 的 `Done` 那层挡住了），`abbrev` 让 delta 在
-  定义等价检查里发生，`rel_sync` 才可能写成 `Iff.rfl`……实际上即便 `abbrev`
-  也仍需手动 `Prod.snd`（见上一条），但 `abbrev` 让其它地方少写 `unfold`。
+* **R/G only really pays off on prefix properties.** The original
+  `region_until_goal` in `Examples/MutexLiveness` was "six-way `action_simp; grind`
+  plus a hand-written prefix induction"; with R/G it becomes two one-sided interface
+  lemmas (`region_steps1` is the component's own guarantee, `region_steps2` is the
+  environment's rely, the latter never mentioning `steps1`) plus the library's
+  `relyGuarantee_until` doing the induction. By contrast the mutex's **safety**
+  (`inv_step`) is not shorter with R/G — see the next point.
+* **For state invariants, R/G buys modularity, not brevity.** I tried to redo a
+  "shared cell × two components" safety example and the conclusion was clear: if some
+  component's **guard-free** step can break `I` from an `I`-state, no rely can rescue
+  it — a rely constrains the **environment's transitions**, not the **current state**
+  (this infeasibility argument is precisely what makes the composition rule sound). So
+  the value of the safety example is that *obligations mention only interfaces*
+  (in `Examples/RelyGuarantee` each direction looks only at the other component),
+  not the proof length.
+* **`sync` hit the same defeq trap again**: `rel`'s equality is `z = (Done.mk, x)`
+  while one wants to say `s' = x`, and the two need `Prod.mk.injEq`, not defeq. That
+  is the third time (`rel_focusView`, `rel_lift`, now `rel_sync`), and the fix is the
+  same: `unfold rel` then `rintro` manually plus `congrArg Prod.snd`. **Conclusion:
+  when writing a "relation unfolding" lemma for a new action, do not count on
+  `Iff.rfl` by default — think through the `Done`/`Prod` layer first.**
+* **`<|>` in a position whose expected type is `Prop` elaborates as
+  `HOrElse Prop ...`**: `theorem next_eq : next = a <|> b <|> c := ...` reports
+  "failed to synthesize HOrElse Prop (Action St)". Writing such equivalence lemmas at
+  the `rel` level (`rel next s s' ↔ rel (a <|> b) s s'`) avoids it — and is closer to
+  the semantics anyway. Incidentally, `Action.ext`-style "namespace prefix" notation
+  does not work either (`Action` is a notation, not a namespace).
+* **`sync` wants to be an `abbrev`, not a `def`**: under `def`, `Iff.rfl` cannot
+  reduce `rel (M₁.sync M₂) s s'` to the unfolded form (the `Done` layer of `rel`
+  blocks it); `abbrev` lets delta happen during definitional-equality checking, so
+  `rel_sync` *can* be written with `Iff.rfl` … in practice even with `abbrev` one
+  still needs the manual `Prod.snd` (previous point), but `abbrev` saves `unfold`
+  elsewhere.
 
-### 11.10 结论
+### 11.10 Conclusions
 
-* 表达能力上，顺序、非确定（`<|>` / `nondet` / `choiceAll`）、守卫、循环、聚焦
-  （`focus`/`focusView`）、精化（含 stuttering）、交错并行、构造性可达性，都能在
-  同一套 `rel` 语义下表达并证明；新示例里没有一个需要绕过 DSL 直接写
-  `σ → Prop`。
-* 实用性上，最有效的证明配方是：
-  **`safe_induct`/`Module.safe_of_*` → `inv_induct` → `simp only [<自己的 def>] at *`
-  → `action_simp` → `grind`（算术/列表推理不稳时换 `omega` 或抽引理）**。
-* 主要的"自动化风险"不是覆盖不足，而是**静默过强**（`grind` 顺手证完整个目标）
-  与**环境敏感**（`deriving`、simp 集顺序）。这两点在设计上应当继续用
-  "可预测 > 强大"的取舍来处理。
+* On expressiveness: sequencing, nondeterminism (`<|>` / `nondet` / `choiceAll`),
+  guards, loops, focusing (`focus`/`focusView`), refinement (with stuttering),
+  interleaving and constructive reachability can all be expressed and proved under
+  the same `rel` semantics; not one of the new examples needed to bypass the DSL and
+  write `σ → Prop` directly.
+* On practicality, the most effective proof recipe is:
+  **`safe_induct`/`Module.safe_of_*` → `inv_induct` → `simp only [<your defs>] at *`
+  → `action_simp` → `grind`** (switch to `omega`, or extract a lemma, when arithmetic
+  or list reasoning is shaky).
+* The main "automation risk" is not insufficient coverage but **being silently too
+  strong** (`grind` finishing the whole goal unasked) and **environment sensitivity**
+  (`deriving`, simp-set order). Both should keep being handled by the same
+  trade-off: **predictability over power**.
