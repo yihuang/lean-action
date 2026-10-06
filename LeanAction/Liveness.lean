@@ -205,6 +205,55 @@ theorem nonincreasing_orElse {A B : Action σ} {μ : σ → Nat}
   rw [rel_orElse] at h
   exact h.elim (hA s s') (hB s s')
 
+/-- **Rank progress along a sequence, with stuttering steps allowed.**
+
+The hypotheses are stated on the sequence itself rather than through a module, so
+that the theorem applies to *projections* of product behaviors: projecting an
+interleaving onto one component yields a sequence in which the other component's
+steps appear as stuttering steps, and it is not a behavior of the component
+module. This is the engine that the module-level versions below are derived
+from. -/
+theorem eventually_zero_of_seq {μ : σ → Nat} {b : Behavior σ} {A : Action σ} {I : Nondet σ}
+    (hI : ∀ n, μ (b n) > 0 → I (b n))
+    (hdec : ∀ n, I (b n) → μ (b n) > 0 → μ (b (n + 1)) ≤ μ (b n))
+    (hA : ∀ n, I (b n) → μ (b n) > 0 → rel A (b n) (b (n + 1)) → μ (b (n + 1)) < μ (b n))
+    (henabled : ∀ n, I (b n) → μ (b n) > 0 → ∃ s', rel A (b n) s')
+    (hfair : WeakFair A b) : ∀ n, ∃ N, n ≤ N ∧ μ (b N) = 0 := by
+  have key : ∀ k, ∀ n, μ (b n) = k → ∃ N, n ≤ N ∧ μ (b N) = 0 := by
+    intro k
+    induction k using Nat.strongRecOn with
+    | ind k ih =>
+      intro n hn
+      by_cases hzero : μ (b n) = 0
+      · exact ⟨n, Nat.le_refl n, hzero⟩
+      · by_cases hreached : ∃ N, n ≤ N ∧ μ (b N) = 0
+        · exact hreached
+        · have hpos : ∀ m, n ≤ m → μ (b m) > 0 := fun m hm =>
+            Nat.pos_of_ne_zero fun hz => hreached ⟨m, hm, hz⟩
+          have hmono_prefix : ∀ d : Nat, μ (b (n + d)) ≤ μ (b n) := by
+            intro d
+            induction d with
+            | zero => exact Nat.le_refl _
+            | succ d ihd =>
+              have hd : μ (b (n + d)) > 0 := hpos _ (Nat.le_add_right n d)
+              have hstep : μ (b (n + d + 1)) ≤ μ (b (n + d)) := by
+                have := hdec (n + d) (hI _ hd) hd
+                simpa [Nat.add_assoc] using this
+              exact Nat.le_trans hstep ihd
+          have hen : ∀ m, n ≤ m → ∃ s', rel A (b m) s' :=
+            fun m hm => henabled m (hI _ (hpos m hm)) (hpos m hm)
+          obtain ⟨m, hnm, htaken⟩ := hfair n hen
+          have hposm : μ (b m) > 0 := hpos m hnm
+          have hlt : μ (b (m + 1)) < μ (b m) := hA m (hI _ hposm) hposm htaken
+          have hle : μ (b m) ≤ μ (b n) := by
+            have hd : n + (m - n) = m := by omega
+            simpa [hd] using hmono_prefix (m - n)
+          have hltk : μ (b (m + 1)) < k := by omega
+          obtain ⟨N, hN, hz⟩ := ih (μ (b (m + 1))) hltk (m + 1) rfl
+          exact ⟨N, Nat.le_trans (Nat.le_trans hnm (Nat.le_succ m)) hN, hz⟩
+  intro n
+  exact key (μ (b n)) n rfl
+
 /-- **Fairness-based inevitability, restricted to an invariant region.**
 
 The hypotheses only have to hold on states satisfying `I`, and `I` only has to
@@ -223,44 +272,13 @@ theorem eventually_zero_of_weakFair_inv {M : Module σ} {A : Action σ} {μ : σ
     (hdec : ∀ s s', I s → μ s > 0 → rel M.next s s' → μ s' ≤ μ s)
     (hA : ∀ s, I s → μ s > 0 → ∀ s', rel A s s' → μ s' < μ s)
     (henabled : ∀ s, I s → μ s > 0 → ∃ s', rel A s s')
-    (hfair : WeakFair A b) : ∀ n, ∃ N, n ≤ N ∧ μ (b N) = 0 := by
-  have key : ∀ k, ∀ n, μ (b n) = k → ∃ N, n ≤ N ∧ μ (b N) = 0 := by
-    intro k
-    induction k using Nat.strongRecOn with
-    | ind k ih =>
-      intro n hn
-      by_cases hzero : μ (b n) = 0
-      · exact ⟨n, Nat.le_refl n, hzero⟩
-      · -- either the goal is already reached later, or the rank stays positive
-        -- along the prefix and fairness produces a decreasing step
-        by_cases hreached : ∃ N, n ≤ N ∧ μ (b N) = 0
-        · exact hreached
-        · have hposn : μ (b n) > 0 := Nat.pos_of_ne_zero hzero
-          have hpos : ∀ m, n ≤ m → μ (b m) > 0 := fun m hm =>
-            Nat.pos_of_ne_zero fun hz => hreached ⟨m, hm, hz⟩
-          have hmono_prefix : ∀ d : Nat, μ (b (n + d)) ≤ μ (b n) := by
-            intro d
-            induction d with
-            | zero => exact Nat.le_refl _
-            | succ d ihd =>
-              have hd : μ (b (n + d)) > 0 := hpos _ (Nat.le_add_right n d)
-              have hstep : μ (b (n + d + 1)) ≤ μ (b (n + d)) := by
-                have := hdec (b (n + d)) (b (n + d + 1)) (hI _ hd) hd (hbeh (n + d))
-                simpa [Nat.add_assoc] using this
-              exact Nat.le_trans hstep ihd
-          have hen : ∀ m, n ≤ m → ∃ s', rel A (b m) s' :=
-            fun m hm => henabled _ (hI _ (hpos m hm)) (hpos m hm)
-          obtain ⟨m, hnm, htaken⟩ := hfair n hen
-          have hposm : μ (b m) > 0 := hpos m hnm
-          have hlt : μ (b (m + 1)) < μ (b m) := hA _ (hI _ hposm) hposm _ htaken
-          have hle : μ (b m) ≤ μ (b n) := by
-            have hd : n + (m - n) = m := by omega
-            simpa [hd] using hmono_prefix (m - n)
-          have hltk : μ (b (m + 1)) < k := by omega
-          obtain ⟨N, hN, hz⟩ := ih (μ (b (m + 1))) hltk (m + 1) rfl
-          exact ⟨N, Nat.le_trans (Nat.le_trans hnm (Nat.le_succ m)) hN, hz⟩
-  intro n
-  exact key (μ (b n)) n rfl
+    (hfair : WeakFair A b) : ∀ n, ∃ N, n ≤ N ∧ μ (b N) = 0 :=
+  eventually_zero_of_seq
+    (hI := hI)
+    (hdec := fun n hIn hpos => hdec (b n) (b (n + 1)) hIn hpos (hbeh n))
+    (hA := fun _ hIn hpos hstep => hA _ hIn hpos _ hstep)
+    (henabled := fun _ hIn hpos => henabled _ hIn hpos)
+    hfair
 
 /-- **Fairness-based inevitability.** If the progress action `A` strictly
 decreases the rank while the goal is not reached, every module step keeps the
@@ -309,6 +327,111 @@ theorem leadsTo_zero_of_weakFair {M : Module σ} {A : Action σ} {μ : σ → Na
     (henabled : ∀ s, μ s > 0 → ∃ s', rel A s s')
     (hfair : WeakFair A b) : LeadsTo (fun _ : σ => True) (fun s => μ s = 0) b :=
   fun n _ => eventually_zero_of_weakFair hbeh hA henv henabled hfair n
+
+/-! ## Compositionality for interleaving
+
+Liveness of an interleaved system from liveness of its components. The two
+ingredients are the ones `interleave_safe` uses for safety, plus the fact that a
+*liveness* property must be stable for the two eventualities to be combined.
+
+Note that projecting a product behavior onto a component does **not** give a
+behavior of the component module: the other component's steps appear as
+stuttering steps. That is why `eventually_zero_of_seq` — the sequence-level rank
+theorem — is the right engine here. -/
+
+/-- A projected step of an interleaved behavior: the first component either
+stutters or is related by the first component's next action. -/
+theorem proj_fst_step {M : Module σ} {N : Module τ} {b : Behavior (σ × τ)}
+    (hbeh : IsBehavior (M.interleave N) b) (n : Nat) :
+    (b (n + 1)).1 = (b n).1 ∨ rel M.next (b n).1 (b (n + 1)).1 := by
+  have hstep := hbeh n
+  rw [Module.rel_interleave_next] at hstep
+  rcases hstep with ⟨h, -⟩ | ⟨-, h⟩
+  · exact Or.inr h
+  · exact Or.inl h
+
+/-- The same for the second component. -/
+theorem proj_snd_step {M : Module σ} {N : Module τ} {b : Behavior (σ × τ)}
+    (hbeh : IsBehavior (M.interleave N) b) (n : Nat) :
+    (b (n + 1)).2 = (b n).2 ∨ rel N.next (b n).2 (b (n + 1)).2 := by
+  have hstep := hbeh n
+  rw [Module.rel_interleave_next] at hstep
+  rcases hstep with ⟨-, h⟩ | ⟨h, -⟩
+  · exact Or.inl h
+  · exact Or.inr h
+
+/-- Product fairness for a lifted action gives component fairness for the
+projected behavior. -/
+theorem weakFair_fst_of_weakFair {A : Action σ} {b : Behavior (σ × τ)}
+    (h : WeakFair (liftLeft A) b) : WeakFair A (fun k => (b k).1) := by
+  intro n hen
+  have hen' : ∀ m, n ≤ m → ∃ q : σ × τ, rel (liftLeft A) (b m) q := by
+    intro m hm
+    obtain ⟨s', hs'⟩ := hen m hm
+    exact ⟨(s', (b m).2), by simpa [liftLeft] using hs'⟩
+  obtain ⟨m, hm, hstep⟩ := h n hen'
+  exact ⟨m, hm, (rel_liftLeft.mp hstep).1⟩
+
+/-- The same for the second component. -/
+theorem weakFair_snd_of_weakFair {B : Action τ} {b : Behavior (σ × τ)}
+    (h : WeakFair (liftRight B) b) : WeakFair B (fun k => (b k).2) := by
+  intro n hen
+  have hen' : ∀ m, n ≤ m → ∃ q : σ × τ, rel (liftRight B) (b m) q := by
+    intro m hm
+    obtain ⟨s', hs'⟩ := hen m hm
+    exact ⟨((b m).1, s'), by simpa [liftRight] using hs'⟩
+  obtain ⟨m, hm, hstep⟩ := h n hen'
+  exact ⟨m, hm, (rel_liftRight.mp hstep).1⟩
+
+/-- A preserved predicate is stable forward along a behavior. This is what makes
+two eventualities combinable: once `P` holds it keeps holding. -/
+theorem forward_stable_of_preserves {M : Module σ} {P : Nondet σ} {b : Behavior σ}
+    (hbeh : IsBehavior M b) (hP : Preserves M.next P) :
+    ∀ n m, n ≤ m → P (b n) → P (b m) := by
+  intro n m hnm
+  induction hnm with
+  | refl => exact id
+  | step _ ih => exact fun h => hP _ (ih h) _ (hbeh _)
+
+/-- Component preservation lifts to the product (first component). -/
+theorem interleave_preserves_fst {M : Module σ} {N : Module τ} {P : Nondet σ}
+    (hP : Preserves M.next P) : Preserves (M.interleave N).next (fun p => P p.1) := by
+  intro p hp q hstep
+  rw [Module.rel_interleave_next] at hstep
+  rcases hstep with ⟨h, -⟩ | ⟨-, h⟩
+  · exact hP _ hp _ h
+  · rw [h]; exact hp
+
+/-- Component preservation lifts to the product (second component). -/
+theorem interleave_preserves_snd {M : Module σ} {N : Module τ} {Q : Nondet τ}
+    (hQ : Preserves N.next Q) : Preserves (M.interleave N).next (fun p => Q p.2) := by
+  intro p hp q hstep
+  rw [Module.rel_interleave_next] at hstep
+  rcases hstep with ⟨-, h⟩ | ⟨h, -⟩
+  · rw [h]; exact hp
+  · exact hQ _ hp _ h
+
+/-- **Liveness of an interleaving composes.** If the first component eventually
+reaches `P` (along the projected behavior) and `P` is preserved by its module,
+and likewise for `Q`, then the product eventually reaches `P ∧ Q`: the
+preservation hypotheses are what let the two eventualities be combined (take the
+later of the two times). -/
+theorem interleave_leadsTo {M : Module σ} {N : Module τ} {P : Nondet σ} {Q : Nondet τ}
+    {b : Behavior (σ × τ)} (hbeh : IsBehavior (M.interleave N) b)
+    (hPpres : Preserves M.next P) (hQpres : Preserves N.next Q)
+    (hP : LeadsTo (fun _ : σ => True) P (fun k => (b k).1))
+    (hQ : LeadsTo (fun _ : τ => True) Q (fun k => (b k).2)) :
+    LeadsTo (fun _ : σ × τ => True) (fun p => P p.1 ∧ Q p.2) b := by
+  have hPstab := forward_stable_of_preserves (M := M.interleave N) hbeh
+    (interleave_preserves_fst (N := N) hPpres)
+  have hQstab := forward_stable_of_preserves (M := M.interleave N) hbeh
+    (interleave_preserves_snd (M := M) hQpres)
+  intro n _
+  obtain ⟨m, hnm, hm⟩ := hP n trivial
+  obtain ⟨k, hnk, hk⟩ := hQ n trivial
+  exact ⟨max m k, Nat.le_trans hnm (Nat.le_max_left m k),
+    hPstab m (max m k) (Nat.le_max_left m k) hm,
+    hQstab k (max m k) (Nat.le_max_right m k) hk⟩
 
 /-! ## Termination of `while` loops -/
 

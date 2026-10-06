@@ -6,6 +6,7 @@ Counter with a log (the running example of the design), nested structures via
 `View.comp`/`focusView`, and a `while` loop.
 -/
 import LeanAction
+import LeanAction.Derive
 
 open LeanAction
 
@@ -81,10 +82,33 @@ structure Outer where
   inner : Inner
   flag : Bool
 
+/- Field views are generated: `Outer.innerView`, `Inner.nView`.
+(A *regular* comment, not a doc comment: doc comments only attach to
+`def`-like commands, so `/- ... -/` is required before custom commands.) -/
+view_defs Outer
+view_defs Inner
+
+/- Field lenses are generated too, with the three laws discharged by eta. -/
+lens_defs Outer
+lens_defs Inner
+
 /-- Proof-free focus points: composition of `View`s selects `Outer.inner.n`. -/
-def innerView : View Outer Inner := ⟨(·.inner), fun s v => { s with inner := v }⟩
-def nView : View Inner Nat := ⟨(·.n), fun s v => { s with n := v }⟩
-def outerN : View Outer Nat := View.comp innerView nView
+def outerN : View Outer Nat := View.comp Outer.innerView Inner.nView
+
+/-- The generated lenses compose to the same focus point. -/
+def outerNLens : Lens Outer Nat := Lens.comp Outer.innerLens Inner.nLens
+
+/-- With a `Lens` (rather than a `View`) the "only the selected component
+changed" form is available: after incrementing the nested counter the whole state
+is determined. -/
+theorem focus_lens_only_n {s s' : Outer}
+    (h : rel (focus outerNLens (update (· + 1))) s s') :
+    s' = { s with inner := { n := s.inner.n + 1 } } := by
+  rw [rel_focus'] at h
+  obtain ⟨hrel, hs'⟩ := h
+  rw [rel_update] at hrel
+  rw [hs', hrel]
+  simp only [outerNLens, Outer.innerLens, Inner.nLens, Lens.comp]
 
 /-- Increment only the nested counter; `flag` and everything else is untouched. -/
 def incrN : Action Outer := focusView outerN (update (· + 1))
@@ -103,7 +127,8 @@ theorem incrN_rel {s s' : Outer} :
 theorem incrN_preserves : Preserves incrN (fun s : Outer => s.inner.n ≥ 0) := by
   unfold Preserves
   intro s hs s' hstep
-  simp only [incrN, outerN, innerView, nView, View.comp, rel_focusView, rel_update] at hstep
+  simp only [incrN, outerN, Outer.innerView, Inner.nView, View.comp, rel_focusView,
+    rel_update] at hstep
   obtain ⟨a, -, rfl⟩ := hstep
   grind
 

@@ -32,6 +32,7 @@ LeanAction/Lens.lean     模块化：Lens、View、focus、积状态 lift、交�
 LeanAction/Proof.lean    证明层：Reach、Preserves、Hoare、Module、Refines
 LeanAction/Tactic.lean   自动化：action_simp、step、inv_induct、safe_induct
 LeanAction/Liveness.lean 时序层：Always / Eventually / LeadsTo、行为、公平性、秩论证
+LeanAction/Derive.lean   元编程：view_defs / lens_defs 命令（结构字段的 View/Lens 生成）
 Examples/                计数器、嵌套结构、while、交错并行、精化
 ```
 
@@ -203,13 +204,20 @@ structure Lens (σ α : Type u) where   -- get/set + 三条 lens 定律
 "聚焦不再改动其它字段"这一类推理（`rel_focus'`），而**定义**聚焦动作并不需要。
 把定律与定义解耦，使用者写 `View` 一行搞定，需要更强推理时再升级到 `Lens`。
 
-> 路线图：自动生成结构字段的 `Lens`/`View`。原型两次尝试**term 宏**
-> （`lens!`、`view!`）都失败在一个具体障碍上：`{ s with f := v }` 里的字段位置
-> 属于 `Lean.Parser.Term.structInstLVal` 语法节点，而 term 宏无法把 `ident`
-> 反引用"提升"成该节点——生成的项在**使用处**报 `unexpected syntax`（宏定义处
-> 不报错，因此容易误以为可用）。可行方向是 `deriving` handler 或 command：
-> 由命令构造完整语法树（或直接 `elabTerm` 拼接字符串后解析），而不是在 term
-> 宏里拼接字段位置。当前保留 `Lens`/`View` 两个显式构造器，`View` 一行即可。
+**自动生成**（`LeanAction/Derive.lean`）：`view_defs Foo` 生成每个字段的
+`Foo.fView : View Foo α`，`lens_defs Foo` 生成 `Foo.fLens : Lens Foo α`
+（三条定律由结构 eta 的 `rfl` 自动关闭）。实现方式是 **command**：getter/setter
+从字符串 `"fun s : Foo => s.f"` / `"fun s v => { s with f := v }"` 经
+`Parser.runParserCategory` 解析成良构语法树，再 `elabCommand` 发出 `def`。
+之所以不是 term 宏，见 §11.6：`{ s with f := v }` 的字段位置属于
+`Lean.Parser.Term.structInstLVal` 节点，term 宏无法用 `ident` 反引用拼出来
+（宏定义处能过，**使用处**才报 `unexpected syntax`）。
+
+两个使用注意（都由实现细节决定，并在 `Derive.lean` 的文档里写明）：
+* 自定义 command **前面不能放 doc comment**（`/-- … -/` 只挂到声明类命令上），
+  要用普通注释 `/- … -/`；
+* 结构必须位于当前 namespace 或其子 namespace 内，因为 `elabCommand` 会给声明名
+  加上当前 namespace 前缀（否则会落到 `Ns.Ns.Struct.fieldView`）。
 
 ### 5.2 积状态与交错并行
 
@@ -383,6 +391,11 @@ theorem twoCounters_safe : twoCounters.Safe inv := by
 安全性：区域的稳定性来自 `Mutex.inv_step`）。做法是给 variant 配上手工区域
 `Region`，而不是指望全局单调。
 
+交错并行的活性也能组合：`interleave_leadsTo` 把"分量最终达到 `P`/`Q`"合成为
+"乘积最终达到 `P ∧ Q`"，其中分量的 `Preserves` 提供**前向稳定性**
+（`forward_stable_of_preserves`），公平性由 `weakFair_fst_of_weakFair` /
+`weakFair_snd_of_weakFair` 从乘积传到分量（`Examples/ParallelLiveness.lean`）。
+
 仍然没有：`Always`/`Eventually` 的不动点演算与复合规则（如 `Always (Eventually P)`）、
 compassion/公平性不变式、以及**区域自动合成**——目前区域与 variant 都要人工给出
 （`Region` 的"到目标前稳定"要按前缀归纳证明，因为它在全局上并不被保持）。
@@ -417,6 +430,7 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 | `Examples/Machine` | 程序驻留状态的栈机：`choiceAll` 做指令分派、对**任意程序**成立的安全性（代码不增长）、具体运行 `[push 2, push 3, add] → [5]` |
 | `Examples/Liveness` | 公平性下的必然性（计数器必达 3）、**不公平则活性失效**的显式定理（stuttering 行为）、safety→`Always` 的桥（含互斥协议的 `Always`）、`while` 终止性与循环全正确性 |
 | `Examples/MutexLiveness` | 共享内存协议的活性：区域内的 variant（非全局单调）、"进入临界区"与"离开临界区"两个方向；后者由安全性（互斥不变式）提供区域稳定性 |
+| `Examples/ParallelLiveness` | 交错并行的活性组合：分量活性（经投影 + 公平性传递 + 序列级秩论证）合成乘积活性，反面例子说明右分量公平假设不可省 |
 
 ---
 
@@ -527,7 +541,47 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 "在临界区 ⇒ 持有 turn" 这一条来自 `Mutex.inv_step` + `always_of_preserves`，
 没有它就无法排除另一进程的步骤，variant 的单调性也就证不出来。
 
-### 11.6 结论
+### 11.6 生成器：term 宏为什么不行，command 为什么行
+
+`Lens`/`View` 的自动生成绕了两次弯路，最后用 command 解决：
+
+* **term 宏两次失败**（`lens!`、`view!`）。`{ s with f := v }` 的字段位置是
+  `Lean.Parser.Term.structInstLVal` 语法节点，而 term 宏的反引用只能产出
+  `ident`；把它硬塞进该位置后，**宏定义处类型检查通过**，展开结果却在**使用处**
+  报 `unexpected syntax`——失败点与病因分离，极易误判。
+* **command 方案**：把 getter/setter 当字符串解析
+  （`Parser.runParserCategory env `term "fun s v => { s with f := v }"`），
+  得到良构节点，再 `elabCommand` 发出 `def`。这条路一次就通。
+* 实现里踩到两个具体坑，都写进了命令的文档：
+  1. **自定义 command 前不能有 doc comment**：`/-- … -/` 只会挂到声明类命令
+     （`def`/`theorem`/`structure`…）上，`/-- … -/ view_defs Foo` 直接是语法错误；
+  2. **`elabCommand` 会给声明名加当前 namespace 前缀**：所以我把它生成的名字
+     相对化（`Name.replacePrefix currNs anonymous`），否则会落到
+     `Ns.Ns.Struct.fieldView`；结构不在当前 namespace 内时命令直接报错。
+  （这两条都不是"文档型"注意事项，而是会让用户莫名其妙失败的约束，因此必须
+  在命令的 docstring 里写明。）
+
+### 11.7 并行活性组合：投影会 stutter
+
+把 `interleave_safe` 的思路搬到活性上，暴露了一个结构性差别：
+
+* **投影不是分量模块的行为**。把乘积行为投影到第一分量，另一分量的步在该分量上
+  表现为**不动**（stutter），而 `IsBehavior M` 要求每一步都由 `M.next` 关联，
+  所以投影不是 `IsBehavior M`。因此模块级秩定理（`eventually_zero_of_weakFair*`）
+  在这里不适用，秩论证必须下沉到**序列级**（`eventually_zero_of_seq`，只需
+  "秩不增 + 公平 + 进展动作可用"这些逐点事实），模块级版本随后成为它的推论。
+* **合取两个"最终"需要稳定性**。"最终 `P`"与"最终 `Q`"取较晚的时刻得到
+  `P ∧ Q`，前提是 `P`/`Q` 沿行为**前向稳定**（`forward_stable_of_preserves`
+  从 `Preserves` 给出）。这就是"安全性 + 活性 ⇒ 合取活性"的具体形态，也正是
+  `interleave_leadsTo` 里那两个 `Preserves` 假设的用途——在例子里它们退化成
+  "计数器只增不减"这种显然的目标单调性。
+* **公平性沿投影传递**：`weakFair_fst_of_weakFair` / `weakFair_snd_of_weakFair`
+  只需要"分量动作可用 ↔ 提升动作可用"这条对应（即 `rel_liftLeft`/`rel_liftRight`
+  的展开），与 stutter 无关。
+* **反面例子**：`leftOnly`（只动左分量）是乘积的合法行为、甚至对左分量的提升动作
+  弱公平，却永远达不到 `p.1 ≥ 3 ∧ p.2 ≥ 4`——右分量的公平假设确实不可省。
+
+### 11.8 结论
 
 * 表达能力上，顺序、非确定（`<|>` / `nondet` / `choiceAll`）、守卫、循环、聚焦
   （`focus`/`focusView`）、精化（含 stuttering）、交错并行、构造性可达性，都能在

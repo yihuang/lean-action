@@ -10,6 +10,7 @@ Partial correctness (`Hoare` triples) as opposed to safety (`Preserves`):
 * `focusView`: a triple for an action focused on a nested field.
 -/
 import LeanAction
+import LeanAction.Derive
 
 open LeanAction
 
@@ -101,10 +102,11 @@ structure Outer where
   inner : Inner
   flag : Bool
 
-def innerView : View Outer Inner := ⟨(·.inner), fun s v => { s with inner := v }⟩
-def nView : View Inner Nat := ⟨(·.n), fun s v => { s with n := v }⟩
+view_defs Outer
+view_defs Inner
+
 /-- The nested field `Outer.inner.n`. -/
-def outerN : View Outer Nat := View.comp innerView nView
+def outerN : View Outer Nat := View.comp Outer.innerView Inner.nView
 
 /-- A Hoare triple for the *focused* increment: the inner pre/post-conditions
 are transported through the view by `Hoare.focusView`. -/
@@ -114,11 +116,11 @@ theorem focused_incr_hoare (k : Nat) :
   refine Hoare.focusView (v := outerN) (A := update (· + 1))
     (P' := fun n => n = k) (Q' := fun n => n = k + 1) ?_ ?_ ?_
   · intro s hs
-    simpa only [outerN, innerView, nView, View.comp] using hs
+    simpa only [outerN, Outer.innerView, Inner.nView, View.comp] using hs
   · apply Hoare.update
     intro n hn
     omega
   · intro s a hs hq
-    simpa only [outerN, innerView, nView, View.comp] using hq
+    simpa only [outerN, Outer.innerView, Inner.nView, View.comp] using hq
 
 end Examples.Hoare
