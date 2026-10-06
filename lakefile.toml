@@ -1,0 +1,13 @@
+name = "lean-action"
+version = "0.1.0"
+defaultTargets = ["LeanAction", "LeanActionExamples"]
+
+[[lean_lib]]
+name = "LeanAction"
+globs = ["LeanAction", "LeanAction.+"]
+roots = ["LeanAction"]
+
+[[lean_lib]]
+name = "LeanActionExamples"
+globs = ["Examples"]
+roots = ["Examples"]
