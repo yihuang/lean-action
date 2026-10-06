@@ -280,6 +280,17 @@ theorem eventually_zero_of_weakFair {M : Module σ} {A : Action σ} {μ : σ →
     (fun s _ hs => henabled s hs)
     hfair
 
+/-- Strong-fairness version of `eventually_zero_of_weakFair_inv`
+(strong fairness implies weak fairness). -/
+theorem eventually_zero_of_strongFair_inv {M : Module σ} {A : Action σ} {μ : σ → Nat}
+    {b : Behavior σ} {I : Nondet σ} (hbeh : IsBehavior M b)
+    (hI : ∀ n, μ (b n) > 0 → I (b n))
+    (hdec : ∀ s s', I s → μ s > 0 → rel M.next s s' → μ s' ≤ μ s)
+    (hA : ∀ s, I s → μ s > 0 → ∀ s', rel A s s' → μ s' < μ s)
+    (henabled : ∀ s, I s → μ s > 0 → ∃ s', rel A s s')
+    (hfair : StrongFair A b) : ∀ n, ∃ N, n ≤ N ∧ μ (b N) = 0 :=
+  eventually_zero_of_weakFair_inv hbeh hI hdec hA henabled hfair.toWeakFair
+
 /-- `LeadsTo` form of `eventually_zero_of_weakFair_inv`. -/
 theorem leadsTo_zero_of_weakFair_inv {M : Module σ} {A : Action σ} {μ : σ → Nat}
     {b : Behavior σ} {I : Nondet σ} (hbeh : IsBehavior M b)

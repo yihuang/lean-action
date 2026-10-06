@@ -203,9 +203,13 @@ structure Lens (σ α : Type u) where   -- get/set + 三条 lens 定律
 "聚焦不再改动其它字段"这一类推理（`rel_focus'`），而**定义**聚焦动作并不需要。
 把定律与定义解耦，使用者写 `View` 一行搞定，需要更强推理时再升级到 `Lens`。
 
-> 路线图：`deriving` handler / `lens!` 宏自动生成结构字段的 `Lens`（含定律证明）。
-> 原型阶段试写了 `lens!` 宏，但由于 `structInstLVal` 反引用与投影解析的
-> 语法细节，最终以稳健为先，只保留了 `Lens`/`View` 两个显式构造器。
+> 路线图：自动生成结构字段的 `Lens`/`View`。原型两次尝试**term 宏**
+> （`lens!`、`view!`）都失败在一个具体障碍上：`{ s with f := v }` 里的字段位置
+> 属于 `Lean.Parser.Term.structInstLVal` 语法节点，而 term 宏无法把 `ident`
+> 反引用"提升"成该节点——生成的项在**使用处**报 `unexpected syntax`（宏定义处
+> 不报错，因此容易误以为可用）。可行方向是 `deriving` handler 或 command：
+> 由命令构造完整语法树（或直接 `elabTerm` 拼接字符串后解析），而不是在 term
+> 宏里拼接字段位置。当前保留 `Lens`/`View` 两个显式构造器，`View` 一行即可。
 
 ### 5.2 积状态与交错并行
 

@@ -113,6 +113,7 @@ lake build          # 构建库 + 示例（Lean v4.33.0）
 | `WeakFair A b` / `StrongFair A b` | 对动作 `A` 的弱/强公平性 |
 | `leadsTo_zero_of_weakFair(_inv)` | 秩论证：公平性下的必然进展（`_inv` 版本只要求在不变量区域内成立） |
 | `loop_can_exit` | `while` 的存在终止运行（配合 `Hoare.loop` 得全正确性） |
+| `eventually_zero_of_strongFair_inv` | 强公平版本的秩论证（`StrongFair ⟹ WeakFair`） |
 | `Preserves.loop` / `Hoare.loop` | 循环的不变性 / 偏正确性 |
 | `Module.interleave` + `interleave_safe` | 交错并行及其安全性的组合定理 |
 
@@ -157,4 +158,6 @@ DESIGN.md                设计文档（语义决策、自动化原理、局限�
   + `while` 终止性 + 共享内存协议的区间变体）；尚无不动点演算、compassion，
   不变量区域也需要人工给出（`DESIGN.md` §9.2、§11.5）。
 * 并行目前是**交错语义**；同步/共享变量需额外的状态分解假设。
-* 结构字段的 `Lens` 目前需手写（`View` 一行即可）；自动派生列为路线图。
+* 结构字段的 `Lens` 目前需手写（`View` 一行即可）。自动派生列在路线图里，并附上了
+  具体障碍：term 宏无法拼接 `{ s with f := v }` 的字段位置（`structInstLVal`），
+  需要 `deriving` handler 或 command 方式（`DESIGN.md` §5.1）。
