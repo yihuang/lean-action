@@ -77,20 +77,31 @@ namespace Examples.Nested
 /-- Nested state: an inner record plus a flag. -/
 structure Inner where
   n : Nat
+  deriving ViewFields, LensFields
 
 structure Outer where
   inner : Inner
   flag : Bool
+  deriving ViewFields, LensFields
 
-/- Field views are generated: `Outer.innerView`, `Inner.nView`.
-(A *regular* comment, not a doc comment: doc comments only attach to
-`def`-like commands, so `/- ... -/` is required before custom commands.) -/
-view_defs Outer
-view_defs Inner
+/- Views and lenses are generated per field by `deriving` (`Outer.innerView`,
+`Inner.nView`, `Outer.innerLens`, …), with the lens laws closed by eta.
 
-/- Field lenses are generated too, with the three laws discharged by eta. -/
-lens_defs Outer
-lens_defs Inner
+Parameterised structures are declined by the deriving handler (the framework
+names the parameter binders hygienically), so there the commands are used with
+the type written out as a term: -/
+structure Wrap (α : Type) where
+  val : α
+
+section
+variable (α : Type)
+view_defs (Wrap α)
+lens_defs (Wrap α)
+end
+
+theorem wrap_lens_get_set (α : Type) (w : Wrap α) (v : α) :
+    (Wrap.valLens α).get ((Wrap.valLens α).set w v) = v :=
+  (Wrap.valLens α).get_set w v
 
 /-- Proof-free focus points: composition of `View`s selects `Outer.inner.n`. -/
 def outerN : View Outer Nat := View.comp Outer.innerView Inner.nView

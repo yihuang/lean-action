@@ -97,13 +97,12 @@ theorem nondet_keeps_bound (n : Nat) :
 
 structure Inner where
   n : Nat
+  deriving ViewFields, LensFields
 
 structure Outer where
   inner : Inner
   flag : Bool
-
-view_defs Outer
-view_defs Inner
+  deriving ViewFields, LensFields
 
 /-- The nested field `Outer.inner.n`. -/
 def outerN : View Outer Nat := View.comp Outer.innerView Inner.nView

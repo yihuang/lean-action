@@ -9,8 +9,8 @@
   （公平性下的必然性，支持"仅在不变量区域内"的变体）、交错并行的**活性组合**
   （`interleave_leadsTo`）与 `while` 终止性（`loop_can_exit`）；
   共享内存协议与并行系统的活性都有实例；
-* 元编程：`view_defs` / `lens_defs` 命令自动生成结构字段的 `View`/`Lens`
-  （`import LeanAction.Derive`）；
+* 元编程：`deriving ViewFields, LensFields`（推荐）或 `view_defs`/`lens_defs`
+  命令生成结构字段的 `View`/`Lens`（`import LeanAction.Derive`；参数化结构用命令）；
 * 自动化：`action_simp` / `step` / `inv_induct` / `safe_induct`，配合 `grind` 收尾；
 * **零外部依赖**（不需要 Mathlib），Lean `v4.33.0`。
 
@@ -120,7 +120,8 @@ lake build          # 构建库 + 示例（Lean v4.33.0）
 | `eventually_zero_of_strongFair_inv` | 强公平版本的秩论证（`StrongFair ⟹ WeakFair`） |
 | `eventually_zero_of_seq` | 序列级秩论证（允许 stutter，用于投影出的行为） |
 | `interleave_leadsTo` | 交错并行的活性组合（配合 `forward_stable_of_preserves`、`weakFair_fst/snd_of_weakFair`） |
-| `view_defs` / `lens_defs` | 生成结构字段的 `View` / `Lens`（`import LeanAction.Derive`） |
+| `deriving ViewFields, LensFields` | 为每个字段生成 `Struct.fView` / `Struct.fLens`（绝对命名，支持 namespace） |
+| `view_defs` / `lens_defs` | 生成 `View` / `Lens`，类型以 term 给出（参数化结构用这条路径） |
 | `Preserves.loop` / `Hoare.loop` | 循环的不变性 / 偏正确性 |
 | `Module.interleave` + `interleave_safe` | 交错并行及其安全性的组合定理 |
 
@@ -166,5 +167,6 @@ DESIGN.md                设计文档（语义决策、自动化原理、局限�
   + `while` 终止性 + 共享内存协议的区间变体）；尚无不动点演算、compassion，
   不变量区域也需要人工给出（`DESIGN.md` §9.2、§11.5）。
 * 并行目前是**交错语义**；同步/共享变量需额外的状态分解假设。
-* 结构字段的 `View`/`Lens` 可由 `view_defs`/`lens_defs` 生成（command 方式）；
-  注意命令前不能用 doc comment、结构需在当前 namespace 内（`DESIGN.md` §5.1、§11.6）。
+* 结构字段的 `View`/`Lens` 可由 `deriving ViewFields, LensFields` 生成（推荐，
+  绝对命名）；参数化结构改用 `view_defs`/`lens_defs` 命令（注意命令前不能用
+  doc comment、结构需在当前 namespace 内），见 `DESIGN.md` §5.1、§11.6。

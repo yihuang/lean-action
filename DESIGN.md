@@ -204,20 +204,31 @@ structure Lens (σ α : Type u) where   -- get/set + 三条 lens 定律
 "聚焦不再改动其它字段"这一类推理（`rel_focus'`），而**定义**聚焦动作并不需要。
 把定律与定义解耦，使用者写 `View` 一行搞定，需要更强推理时再升级到 `Lens`。
 
-**自动生成**（`LeanAction/Derive.lean`）：`view_defs Foo` 生成每个字段的
-`Foo.fView : View Foo α`，`lens_defs Foo` 生成 `Foo.fLens : Lens Foo α`
-（三条定律由结构 eta 的 `rfl` 自动关闭）。实现方式是 **command**：getter/setter
-从字符串 `"fun s : Foo => s.f"` / `"fun s v => { s with f := v }"` 经
-`Parser.runParserCategory` 解析成良构语法树，再 `elabCommand` 发出 `def`。
-之所以不是 term 宏，见 §11.6：`{ s with f := v }` 的字段位置属于
+**自动生成**（`LeanAction/Derive.lean`）有两条路径：
+
+1. **`deriving ViewFields, LensFields`**（推荐）：为每个字段生成
+   `Struct.fView : View Struct α` 与 `Struct.fLens : Lens Struct α`
+   （三条 lens 定律由结构 eta 的 `rfl` 关闭）。走 `deriving` 机制
+   （标记类 + `Lean.Elab.registerDerivingHandler`），因此：
+   * 声明名是**绝对**的（`Deep.Point.xLens`），namespace 内也正确；
+   * **不受 doc comment 限制**（`deriving` 子句是结构声明的一部分）。
+   代价是**不支持带参数的结构**：框架用 `Deriving.mkHeader` 生成的参数绑定名带
+   hygiene 后缀，无法写进 getter/setter 字符串，因此 handler 显式报错并指向命令路径。
+2. **`view_defs T` / `lens_defs T`**：类型以 **term** 给出，所以参数化结构也能用
+   （在 `section` + `variable (α : Type)` 里写 `view_defs (Box α)`）。
+   实现方式是 command：getter/setter 从字符串 `"fun s : Box α => s.val"` /
+   `"fun s v => { s with val := v }"` 经 `Parser.runParserCategory` 解析成
+   **良构的 `structInstLVal` 节点**，再 `elabCommand` 发出 `def`。
+
+之所以不写成 term 宏，见 §11.6：`{ s with f := v }` 的字段位置属于
 `Lean.Parser.Term.structInstLVal` 节点，term 宏无法用 `ident` 反引用拼出来
 （宏定义处能过，**使用处**才报 `unexpected syntax`）。
 
-两个使用注意（都由实现细节决定，并在 `Derive.lean` 的文档里写明）：
+command 路径的两个使用注意（都由实现细节决定，也写在 `Derive.lean` 的文档里）：
 * 自定义 command **前面不能放 doc comment**（`/-- … -/` 只挂到声明类命令上），
   要用普通注释 `/- … -/`；
 * 结构必须位于当前 namespace 或其子 namespace 内，因为 `elabCommand` 会给声明名
-  加上当前 namespace 前缀（否则会落到 `Ns.Ns.Struct.fieldView`）。
+  加上当前 namespace 前缀（否则会落到 `Ns.Ns.Struct.fView`）。
 
 ### 5.2 积状态与交错并行
 
@@ -560,6 +571,20 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
      `Ns.Ns.Struct.fieldView`；结构不在当前 namespace 内时命令直接报错。
   （这两条都不是"文档型"注意事项，而是会让用户莫名其妙失败的约束，因此必须
   在命令的 docstring 里写明。）
+* **`deriving` 路径**随后补上，并暴露了另外三个元编程细节：
+  1. 框架 API 是 `Lean.Elab.registerDerivingHandler`（不是 `Lean.Elab.Deriving.*`），
+     `DerivingHandler := Array Name → CommandElabM Bool`，返回 `true` 表示
+     "已处理"，从而**不**生成默认实例；注册名必须是**完全限定**的类名
+     （`LeanAction.ViewFields`），只写短名匹配不上；
+  2. `deriving X` 要求 `X` 能在环境中解析，所以需要一个**标记类**
+     （`class ViewFields (σ : Type u)`）——没人把它当真的类型类用，handler 里
+     返回 `true` 抑制实例生成；
+  3. **custom command 里的 `liftTermElabM (Term.elabType …)` 看不到 section
+     variable**，所以命令不能用 `elabType` 来提取结构名（那会报
+     "Unknown identifier α"，但**同时**又把 `def` 建出来，因为 `elabCommand`
+     是把声明当作声明来展开的，那里 section variable 是可见的）。改成**纯语法地**
+     找最左标识符 + 候选名（原样 / 当前 namespace 前缀 / 去掉 `_root_.`），
+     并跳过 `anonymous` 标识符节点。
 
 ### 11.7 并行活性组合：投影会 stutter
 
