@@ -62,6 +62,10 @@ theorem safe : M.Safe inv := by
 | --- | --- |
 | `Examples/Basic.lean` | `do` DSL、`<|>`、`while` 循环、`View.comp` 嵌套字段聚焦 |
 | `Examples/Parallel.lean` | `Module.interleave` 交错并行、`Refines` 精化与 stuttering |
+| `Examples/Mutex.lean` | 共享变量协议：6 路进程步的互斥、构造性可达性、"被阻塞"的否定证明 |
+| `Examples/Hoare.lean` | 偏正确性：`iterate`、`while`（`Hoare.loop`）、`nondet`、`focusView` |
+| `Examples/DataRefinement.lean` | 非恒等抽象映射、安全性传递、实现层私有不变式、运行提升 |
+| `Examples/Machine.lean` | 程序驻留状态的栈机：`choiceAll` 分派、对任意程序成立的安全性、具体运行 |
 
 ```bash
 lake build          # 构建库 + 示例（Lean v4.33.0）
@@ -85,8 +89,9 @@ lake build          # 构建库 + 示例（Lean v4.33.0）
 ### 动作
 
 `skip` `fail` `guard P` `assert P` `assume P` `update f` `set v` `nondet R`
-`choiceAll B`，以及组合子 `A <|> B`、`seq A B`（`A >>= f`）、`iterate A n`、
-`while[P] A`（`loop P A`）、`liftLeft`/`liftRight`、`focus`/`focusView`。
+`choiceAll B`，以及组合子 `A ;; B`（`seq`）、`A <|> B`（`Alternative`）、
+`A >>= f`、`iterate A n`、`while[P] A`（`loop P A`）、`liftLeft`/`liftRight`、
+`focus`/`focusView`。
 
 ### 证明层
 
@@ -98,6 +103,8 @@ lake build          # 构建库 + 示例（Lean v4.33.0）
 | `Hoare P A Q` | 偏正确性三元组 |
 | `Module.Safe M P` | 所有可达状态满足 `P` |
 | `Refines f Abs Conc` | 数据精化（允许 stuttering） |
+| `Preserves.loop` / `Hoare.loop` | 循环的不变性 / 偏正确性 |
+| `Module.interleave` + `interleave_safe` | 交错并行及其安全性的组合定理 |
 
 ### 自动化
 
@@ -122,6 +129,15 @@ LeanAction/Tactic.lean   action_simp / step / inv_induct / safe_induct
 Examples/                可编译示例
 DESIGN.md                设计文档（语义决策、自动化原理、局限与路线图）
 ```
+
+## 示例与探索
+
+`Examples/` 里的 6 个文件不只是 API 演示，也是对照设计预期的实验记录：
+它倒逼出的库能力（`Preserves.loop`、`Hoare.iterate/loop/nondet/update/set`、
+`not_rel_guard_seq`、`interleave_safe`、`;;`）与踩到的坑（`apply` 命名隐式参数、
+`rel` 到等式的 `have`、`match` 遮蔽状态变量、`decide` 对 `rel` 不可用、
+`grind` 的环境敏感性、共享变量不能用 `interleave`）都记录在
+[`DESIGN.md` 第 11 节](DESIGN.md#11-通过示例探索表达力与实用性)。
 
 ## 已知边界
 

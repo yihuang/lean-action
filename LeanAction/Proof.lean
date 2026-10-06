@@ -119,6 +119,19 @@ theorem Preserves.iterate {A : Action σ} {I : Nondet σ} (h : Preserves A I) :
     obtain ⟨t, h1, h2⟩ := hstep
     exact Preserves.iterate h n t (h s hs t h1) s' h2
 
+/-- A `while` loop preserves any invariant of its body. -/
+theorem Preserves.loop {P : σ → Prop} {A : Action σ} {I : Nondet σ}
+    (hbody : Preserves A I) : Preserves (loop P A) I := by
+  intro s hs s' h
+  rw [rel_loop] at h
+  obtain ⟨hr, -⟩ := h
+  revert hs
+  induction hr with
+  | refl => intro hs; exact hs
+  | tail _ hstep ih =>
+    intro hs
+    exact hbody _ (ih hs) _ hstep.2
+
 theorem Preserves.and {A : Action σ} {I J : Nondet σ} (hI : Preserves A I)
     (hJ : Preserves A J) : Preserves A (fun s => I s ∧ J s) :=
   fun s hs s' hstep => ⟨hI s hs.1 s' hstep, hJ s hs.2 s' hstep⟩
@@ -181,6 +194,59 @@ theorem Hoare.guard {P Q : Nondet σ} {R : σ → Prop} (_h : ∀ s, P s → R s
   simp only [rel_guard] at hstep
   simpa [hstep.2] using hQ s hs
 
+/-- Any invariant of the loop body is preserved along the whole loop closure. -/
+theorem loop_invariant {P : σ → Prop} {A : Action σ} {I : Nondet σ}
+    (hbody : ∀ s, I s → P s → ∀ s', rel A s s' → I s')
+    {s s' : σ} (hs : I s) (h : rel (loop P A) s s') : I s' := by
+  rw [rel_loop] at h
+  obtain ⟨hr, -⟩ := h
+  revert hs
+  induction hr with
+  | refl => intro hs; exact hs
+  | tail _ hstep ih =>
+    intro hs
+    exact hbody _ (ih hs) hstep.1 _ hstep.2
+
+/-- Partial correctness of a `while` loop: an invariant of the body that is
+strong enough to discharge the post-condition on exit. -/
+theorem Hoare.loop {P : σ → Prop} {A : Action σ} {I Q : Nondet σ}
+    (hbody : ∀ s, I s → P s → ∀ s', rel A s s' → I s')
+    (hQ : ∀ s, I s → ¬ P s → Q s) : Hoare I (loop P A) Q := by
+  intro s hs s' h
+  rw [rel_loop] at h
+  exact hQ s' (loop_invariant hbody hs (by rw [rel_loop]; exact h)) h.2
+
+/-- Hoare rule for a state update. -/
+theorem Hoare.update {P Q : Nondet σ} {f : σ → σ} (h : ∀ s, P s → Q (f s)) :
+    Hoare P (update f) Q := by
+  intro s hs s' hstep
+  simp only [rel_update] at hstep
+  simpa [hstep] using h s hs
+
+/-- Hoare rule for setting the whole state. -/
+theorem Hoare.set {P Q : Nondet σ} {v : σ} (h : ∀ s, P s → Q v) : Hoare P (set v) Q := by
+  intro s hs s' hstep
+  simp only [rel_set] at hstep
+  simpa [hstep] using h s hs
+
+/-- Hoare rule for an arbitrary nondeterministic relation. -/
+theorem Hoare.nondet {P Q : Nondet σ} {R : Rel σ σ}
+    (h : ∀ s, P s → ∀ s', R s s' → Q s') : Hoare P (nondet R) Q :=
+  fun s hs s' hstep => h s hs s' hstep
+
+/-- Repeating an action preserves any invariant. -/
+theorem Hoare.iterate {I : Nondet σ} {A : Action σ} (h : Preserves A I) :
+    ∀ n, Hoare I (iterate A n) I
+  | 0 => by
+    intro s hs s' hstep
+    simp only [rel_iterate_zero] at hstep
+    simpa [hstep] using hs
+  | n + 1 => by
+    intro s hs s' hstep
+    simp only [rel_iterate_succ] at hstep
+    obtain ⟨t, h1, h2⟩ := hstep
+    exact Hoare.iterate h n t (h s hs t h1) s' h2
+
 /-- Hoare rule for a focused action: the inner triple, transported through the
 view, gives the outer pre/post-conditions. -/
 theorem Hoare.focusView {v : View σ α} {A : Action α} {P Q : Nondet σ}
@@ -235,6 +301,40 @@ def interleave (M : Module σ) (N : Module τ) : Module (σ × τ) where
     rel (M.interleave N).next p q ↔
       (rel M.next p.1 q.1 ∧ q.2 = p.2) ∨ (rel N.next p.2 q.2 ∧ q.1 = p.1) := by
   simp [interleave]
+
+@[simp] theorem interleave_init {M : Module σ} {N : Module τ} {p : σ × τ} :
+    (M.interleave N).init p ↔ M.init p.1 ∧ N.init p.2 := Iff.rfl
+
+/-- First projection of reachability in an interleaved system. -/
+theorem reach_interleave_fst {M : Module σ} {N : Module τ} {p p' : σ × τ}
+    (hr : Reach (M.interleave N).next p p') : Reach M.next p.1 p'.1 := by
+  induction hr with
+  | refl => exact Reach.refl _ _
+  | tail _ hstep ih =>
+    rw [rel_interleave_next] at hstep
+    rcases hstep with ⟨h, -⟩ | ⟨-, h⟩
+    · exact Reach.step ih h
+    · rw [h]; exact ih
+
+/-- Second projection of reachability in an interleaved system. -/
+theorem reach_interleave_snd {M : Module σ} {N : Module τ} {p p' : σ × τ}
+    (hr : Reach (M.interleave N).next p p') : Reach N.next p.2 p'.2 := by
+  induction hr with
+  | refl => exact Reach.refl _ _
+  | tail _ hstep ih =>
+    rw [rel_interleave_next] at hstep
+    rcases hstep with ⟨-, h⟩ | ⟨h, -⟩
+    · rw [h]; exact ih
+    · exact Reach.step ih h
+
+/-- **Compositionality of safety for interleaving**: component invariants compose
+into an invariant of the product system. -/
+theorem interleave_safe {M : Module σ} {N : Module τ} {P : Nondet σ} {Q : Nondet τ}
+    (hM : M.Safe P) (hN : N.Safe Q) :
+    (M.interleave N).Safe (fun p : σ × τ => P p.1 ∧ Q p.2) := by
+  intro p hp p' hr
+  exact ⟨hM p.1 hp.1 p'.1 (reach_interleave_fst hr),
+         hN p.2 hp.2 p'.2 (reach_interleave_snd hr)⟩
 
 /-- A component invariant of an interleaved system. -/
 theorem interleave_preserves_left {M : Module σ} {N : Module τ} {I : Nondet σ}

@@ -201,6 +201,9 @@ def loop (P : σ → Prop) (A : Action σ) : Action σ :=
 /-- Angelic choice over a family of actions. -/
 def choiceAll (B : α → Action σ) : Action σ := fun s z => ∃ a, B a s z
 
+/-- Sequential composition notation: `A ;; B` is "first `A`, then `B`". -/
+infixl:60 " ;; " => seq
+
 @[inherit_doc] notation "while[" P "]" A => loop P A
 
 /-! ### Semantic unfolding lemmas
@@ -301,6 +304,15 @@ theorem rel_bind_action {A : Action σ} {f : Done → Action σ} {s s' : σ} :
 @[simp] theorem rel_iterate_succ {A : Action σ} {n : Nat} {s s' : σ} :
     rel (iterate A (n + 1)) s s' ↔ ∃ t, rel A s t ∧ rel (iterate A n) t s' := by
   simp [iterate, rel_seq]
+
+/-- A guarded sequential action cannot run when the guard fails. -/
+theorem not_rel_guard_seq {P : σ → Prop} {A : Action σ} {s t : σ} (h : ¬ P s) :
+    ¬ rel (guard P ;; A) s t := by
+  intro hrel
+  rw [rel_seq] at hrel
+  obtain ⟨u, hg, -⟩ := hrel
+  rw [rel_guard] at hg
+  exact h hg.1
 
 /-- Unfolding of `loop`. Deliberately *not* a `simp` lemma: rewriting the
 closure would not terminate. Use it explicitly at the start of an induction. -/

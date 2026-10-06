@@ -373,15 +373,91 @@ theorem twoCounters_safe : twoCounters.Safe inv := by
 ## 10. 验证
 
 ```bash
-lake build      # Lean v4.33.0，零依赖，13 个 job，无 warning
+lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 ```
 
 已通过编译的示例覆盖：
 
 | 示例 | 覆盖内容 |
 | --- | --- |
-| `Examples/Counter.incr/reset` | `do` DSL、`<|>`、不变式 `n = log.length`、`safe_induct` |
-| `Examples.Counter.countdown` | `while` 循环、`rel_loop` 展开、`omega` |
-| `Examples.Nested` | `View.comp` 嵌套字段聚焦、"只改选中字段"的精确引理 |
-| `Examples.Parallel.twoCounters` | `Module.interleave` 交错并行、求和不变式 |
-| `Examples.Refinement` | `Refines` + stuttering、`Refines.safe` 安全性传递 |
+| `Examples/Basic` | `do` DSL、`<|>`、不变式 `n = log.length`、`safe_induct`、`while` + `rel_loop`、`View.comp` 嵌套字段聚焦 |
+| `Examples/Parallel` | `Module.interleave` 交错并行、求和不变式、`Refines` + stuttering |
+| `Examples/Mutex` | 共享变量协议（turn-based 互斥）：`guard` + 6 路进程步、混合两进程的不变式、`safe_induct`/`safe_of_invariant`、构造性可达性、`not_rel_guard_seq` 证明"被阻塞" |
+| `Examples/Hoare` | 偏正确性：`Hoare.iterate`（算术后置条件）、`Hoare.loop`（while + 退出条件）、`Hoare.nondet`、`Hoare.focusView`（聚焦三元组） |
+| `Examples/DataRefinement` | 非恒等抽象映射、安全性沿精化传递、实现层私有不变式（`count = log.length`）、`Refines.reach` 把具体运行提升为抽象运行 |
+| `Examples/Machine` | 程序驻留状态的栈机：`choiceAll` 做指令分派、对**任意程序**成立的安全性（代码不增长）、具体运行 `[push 2, push 3, add] → [5]` |
+
+---
+
+## 11. 通过示例探索：表达力与实用性
+
+本节是"写例子时真实发生了什么"的记录（含踩坑），比照 §3–§7 的设计预期。
+
+### 11.1 示例倒逼出来的库能力
+
+| 缺口 | 新增 |
+| --- | --- |
+| `while` 的不变性无从下手 | `Preserves.loop`、`loop_invariant` |
+| 偏正确性只覆盖 `skip/seq/guard/nondet` | `Hoare.update`、`Hoare.set`、`Hoare.iterate`、`Hoare.loop` |
+| "守卫失败 ⇒ 这一步不可达"（互斥里证明另一进程被阻塞） | `not_rel_guard_seq` |
+| 交错并行的安全性无法组合 | `interleave_init`、`reach_interleave_fst/snd`、`interleave_safe` |
+| 顺序组合没有记法（只能写 `seq A B` 或 `do`） | `;;`（`infixl:60`，作用在 `seq` 上） |
+
+其中 `interleave_safe` 最有价值：它是**交错并行的安全性组合定理**——
+`M.Safe P` 与 `N.Safe Q` 蕴含 `(M.interleave N).Safe (P ∘ fst ∧ Q ∘ snd)`，
+证明只依赖"可达性在两个投影下分别下降"（`reach_interleave_fst/snd`）。
+
+### 11.2 顺手的地方
+
+* **协议规模不是问题**：Mutex 的 6 路非确定步（含两条改写共享变量 `turn` 的 `exit`）
+  用 `inv_induct; simp only [...]; action_simp; grind` 一次通过，不需要手工 `rcases`。
+* **三段式不变式**（`init ⊆ I` → `Preserves next I` → `I ⊆ P`）与真实证明习惯吻合，
+  `Module.safe_of_invariant` 直接给出这个形状。
+* **构造性可达性**：`Reach.single`/`Reach.step` 链 + 每步一个 `action_simp` 引理，
+  可以同时证明"什么能发生"（`p1_can_enter`）与"什么不能发生"（`p2_blocked_...`）。
+* **精化与实现细节并存**：抽象层用 `Refines.safe` 拿接口性质，实现层用 `Preserves`
+  证明日志长度这类抽象层看不见的性质，两者互不干扰。
+* **程序驻留状态的分派**：`choiceAll` + `guard (code.head? = some i)` 让"取当前指令"
+  不需要对状态做依赖模式匹配；`Instr` 只是普通归纳类型，分派靠存在量词的见证。
+
+### 11.3 别扭之处与已做的改进
+
+1. **`inv_induct` 曾内置 `try grind`，会静默证完整个目标**，随后用户写的
+   `simp only [...]`/`grind` 立刻报 `No goals to be solved`，且很难从报错定位。
+   已改为 `inv_induct = unfold Preserves; intro …; action_simp`（不调用 `grind`），
+   行为可预测；需要 `grind` 的地方明确写出来。
+2. **`apply L (P' := …)` 在"被指定的隐式参数不出现在结论里"时不可靠**
+   （`Hoare.focusView`、`Module.safe_of_invariant` 都踩到）。改用
+   `refine L (…) ?_ ?_ ?_` 或项模式；这是 Lean 的 `apply` 目标导向统一使然。
+3. **把 `rel` 假设"降级"为具体等式不能靠 `have`**：`rel (update f) s s'` 与
+   `s' = f s` 之间隔着 `Done`/`Prod.mk.injEq`，**不是** defeq。必须先
+   `simp only [f, Module.next, rel_update] at h`，再当等式用。
+4. **状态里的 `match` 分支会遮蔽同名变量**：`match m.stack with | a::b::rest => … | s => …`
+   里的 `s` 让后续 `cases m.stack` 找不到 `m`。规避：把中间状态也用同名变量接住
+   （`obtain ⟨m, ⟨-, rfl⟩, h⟩ := h`），或把"逐指令事实"先抽成独立引理
+   （`execInstr_code_shrinks`）——后者更稳。
+5. **`decide`/`native_decide` 对 `rel` 目标不可用**：`Decidable (rel A s s')` 无法合成，
+   因为 `rel` 是函数、实例搜索不会展开它。具体计算改用
+   `simp only [...] <;> first | rfl | grind`。
+6. **`grind` 的表现对环境敏感**：Machine 例子里同样的目标，`deriving DecidableEq`
+   与否会影响结果；`code_never_grows` 一次成功、后来同类目标失败，最终靠把
+   算术抽成 `execInstr_code_shrinks` 引理才稳定。**结论：关键证明不要全押在
+   `grind` 上，把可手工的部分（算术、列表长度）抽成引理。**
+7. **共享变量并行不是 `interleave` 的适用面**：Mutex 的 `turn` 同时被两个进程读写，
+   不能用"两个独立模块取积"表达，只能手写一个全局 record + 进程步的 `<|>`。
+   这界定了 `interleave` 的语义：**独立分量**的异步组合；共享内存需要框架/分离层。
+8. **循环的终止性仍无**：`Preserves.loop`/`Hoare.loop` 只做偏正确性；活性（fairness,
+   `Eventually`）不在当前范围内（§9.2）。
+
+### 11.4 结论
+
+* 表达能力上，顺序、非确定（`<|>` / `nondet` / `choiceAll`）、守卫、循环、聚焦
+  （`focus`/`focusView`）、精化（含 stuttering）、交错并行、构造性可达性，都能在
+  同一套 `rel` 语义下表达并证明；新示例里没有一个需要绕过 DSL 直接写
+  `σ → Prop`。
+* 实用性上，最有效的证明配方是：
+  **`safe_induct`/`Module.safe_of_*` → `inv_induct` → `simp only [<自己的 def>] at *`
+  → `action_simp` → `grind`（算术/列表推理不稳时换 `omega` 或抽引理）**。
+* 主要的"自动化风险"不是覆盖不足，而是**静默过强**（`grind` 顺手证完整个目标）
+  与**环境敏感**（`deriving`、simp 集顺序）。这两点在设计上应当继续用
+  "可预测 > 强大"的取舍来处理。

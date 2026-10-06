@@ -53,9 +53,12 @@ macro "action_step" : tactic => `(tactic| (action_simp; try grind))
 /-- Discharge a one-step obligation: unfold the action semantics, then `grind`. -/
 macro "step" : tactic => `(tactic| (action_simp; try grind))
 
-/-- The canonical skeleton for a one-step invariant (`Preserves A I`). -/
+/-- The canonical skeleton for a one-step invariant (`Preserves A I`):
+introduce the binders and unfold the action semantics. Deliberately *does not*
+call `grind`: it leaves a first-order goal for the caller, so a following
+`simp only [...]`/`grind` line always has something to do. -/
 macro "inv_induct" : tactic =>
-  `(tactic| (unfold Preserves; intro s hs s' hstep; step))
+  `(tactic| (unfold Preserves; intro s hs s' hstep; action_simp))
 
 /-- Prove `M.Safe P` from a one-step invariant. Leaves two goals:
 `M.init ⊆ P` and `Preserves M.next P`, both first-order after `action_simp`. -/
