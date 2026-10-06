@@ -26,8 +26,11 @@ structure St where
   pc2 : Nat
   turn : Nat
 
-/-- Process 1 asks for the lock. -/
-def req1 : Action St := update fun s => { s with pc1 := 1 }
+/-- Process 1 asks for the lock. Note the guard: without it a process could
+"re-request" from inside the critical section, which is harmless for safety (the
+turn is not touched) but breaks liveness reasoning, where the region
+`pc1 = 1` must be stable. -/
+def req1 : Action St := guard (fun s => s.pc1 = 0) ;; update fun s => { s with pc1 := 1 }
 
 /-- Process 1 enters the critical section when it holds the turn. -/
 def enter1 : Action St :=
@@ -37,7 +40,7 @@ def enter1 : Action St :=
 def exit1 : Action St :=
   guard (fun s => s.pc1 = 2) ;; update (fun s => { s with pc1 := 0, turn := 2 })
 
-def req2 : Action St := update fun s => { s with pc2 := 1 }
+def req2 : Action St := guard (fun s => s.pc2 = 0) ;; update fun s => { s with pc2 := 1 }
 
 def enter2 : Action St :=
   guard (fun s => s.pc2 = 1 ∧ s.turn = 2) ;; update (fun s => { s with pc2 := 2 })

@@ -60,7 +60,8 @@ theorem eventually_three (b : Behavior Nat) (hbeh : IsBehavior M b)
     (hfair : WeakFair incr b) : LeadsTo (fun _ => true) (fun n => n ≥ 3) b := by
   refine LeadsTo.mono (fun _ _ => trivial)
     (leadsTo_zero_of_weakFair (M := M) (A := incr) (μ := μ) hbeh
-      (fun s hs s' h => incr_decreases hs h) next_nonincreasing
+      (fun s hs s' h => incr_decreases hs h)
+      (fun s s' _ h => next_nonincreasing s s' h)
       (fun s hs => incr_enabled hs) hfair) ?_
   intro s hs
   simp only [μ] at hs

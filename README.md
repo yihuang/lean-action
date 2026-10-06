@@ -6,7 +6,8 @@
 * 模块化：`View`/`Lens` + `focus` 聚焦到嵌套结构字段，积状态 + `interleave` 表达交错并行；
 * 证明层：`Reach`、`Preserves`、`Hoare`、`Module`、`Refines`，**单一归纳引擎**；
 * 时序层：`Always` / `Eventually` / `LeadsTo`、行为、弱/强公平性、秩论证
-  （公平性下的必然性）与 `while` 终止性（`loop_can_exit`）；
+  （公平性下的必然性，支持"仅在不变量区域内"的变体）与 `while` 终止性
+  （`loop_can_exit`）；共享内存协议的活性已有实例；
 * 自动化：`action_simp` / `step` / `inv_induct` / `safe_induct`，配合 `grind` 收尾；
 * **零外部依赖**（不需要 Mathlib），Lean `v4.33.0`。
 
@@ -69,6 +70,7 @@ theorem safe : M.Safe inv := by
 | `Examples/DataRefinement.lean` | 非恒等抽象映射、安全性传递、实现层私有不变式、运行提升 |
 | `Examples/Machine.lean` | 程序驻留状态的栈机：`choiceAll` 分派、对任意程序成立的安全性、具体运行 |
 | `Examples/Liveness.lean` | 公平性下的必然性、**不公平则活性失效**的定理、`Always` 形式的互斥、循环终止性与全正确性 |
+| `Examples/MutexLiveness.lean` | 共享内存协议活性：区域内（非全局单调）的 variant，"进入"与"离开"临界区两个方向，后者由安全性提供区域稳定性 |
 
 ```bash
 lake build          # 构建库 + 示例（Lean v4.33.0）
@@ -109,7 +111,7 @@ lake build          # 构建库 + 示例（Lean v4.33.0）
 | `Always P b` / `Eventually P b` / `LeadsTo P Q b` | 「始终 / 最终 / 一旦…就最终…」时序谓词（`b : Behavior σ := Nat → σ`） |
 | `IsBehavior M b` / `IsRun M b` | `b` 是 `M` 的行为 / 从初态出发的行为 |
 | `WeakFair A b` / `StrongFair A b` | 对动作 `A` 的弱/强公平性 |
-| `leadsTo_zero_of_weakFair` | 秩论证：公平性下的必然进展 |
+| `leadsTo_zero_of_weakFair(_inv)` | 秩论证：公平性下的必然进展（`_inv` 版本只要求在不变量区域内成立） |
 | `loop_can_exit` | `while` 的存在终止运行（配合 `Hoare.loop` 得全正确性） |
 | `Preserves.loop` / `Hoare.loop` | 循环的不变性 / 偏正确性 |
 | `Module.interleave` + `interleave_safe` | 交错并行及其安全性的组合定理 |
@@ -152,7 +154,7 @@ DESIGN.md                设计文档（语义决策、自动化原理、局限�
 * `Nondet` 是 `Prop` 值，**不可计算**：本库是规范/证明层，执行层需另用
   `List`/`Multiset` 单子（见 `DESIGN.md` §9.1）。
 * 时序层只覆盖**秩论证型**的活性（`Always`/`Eventually`/`LeadsTo` + 弱/强公平性
-  + `while` 终止性）；尚无不动点演算、compassion，以及共享内存协议的活性
-  （`DESIGN.md` §9.2）。
+  + `while` 终止性 + 共享内存协议的区间变体）；尚无不动点演算、compassion，
+  不变量区域也需要人工给出（`DESIGN.md` §9.2、§11.5）。
 * 并行目前是**交错语义**；同步/共享变量需额外的状态分解假设。
 * 结构字段的 `Lens` 目前需手写（`View` 一行即可）；自动派生列为路线图。

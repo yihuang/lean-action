@@ -362,17 +362,26 @@ theorem twoCounters_safe : twoCounters.Safe inv := by
   `M.Safe P` + 从初态出发的行为 ⇒ `Always P b`。
 * **公平性下的必然性**：`TakesStep`、`WeakFair`、`StrongFair`
   （以及 `StrongFair.toWeakFair`），加上秩论证
-  `eventually_zero_of_nat_progress_from` / `leadsTo_zero_of_weakFair`：
-  若进展动作 `A` 在目标未达时严格减小 `μ : σ → Nat`、所有步不增大 `μ`、
-  `A` 在 `μ > 0` 时始终可用，且行为对 `A` 弱公平，则 `μ` 最终归零
-  （且"从任意时刻起"成立，因而可写成 `LeadsTo`）。
+  `eventually_zero_of_nat_progress_from` / `eventually_zero_of_weakFair(_inv)` /
+  `leadsTo_zero_of_weakFair(_inv)`：若进展动作 `A` 在目标未达时严格减小
+  `μ : σ → Nat`、所有步不增大 `μ`、`A` 在 `μ > 0` 时始终可用，且行为对 `A`
+  弱公平，则 `μ` 最终归零（且"从任意时刻起"成立，因而可写成 `LeadsTo`）。
+  `_inv` 变体只要求在**不变式区域 `I` 内**成立，且 `I` 只在 `μ > 0` 时需要——
+  共享内存协议的 variant 通常**不是全局单调的**（离开临界区会让它回升），
+  这一放宽是那类证明的前提。
 * **循环终止性**：`loop_can_exit` 用 variant 给出 `while` 的"存在终止运行"，
   与 `Hoare.loop`（偏正确性）组合即得循环的**全正确性**
   （见 `Examples/Liveness.lean` 的 `countTo3_total`）。
 
+共享内存协议的活性已经有实例：`Examples/MutexLiveness.lean` 证明
+"进程 1 在区域（等待且持有 turn）内、对 `enter1` 弱公平 ⇒ 最终进入临界区"，
+以及互补方向"在临界区内、对 `exit1` 弱公平 ⇒ 最终离开"（后者还会**消费**
+安全性：区域的稳定性来自 `Mutex.inv_step`）。做法是给 variant 配上手工区域
+`Region`，而不是指望全局单调。
+
 仍然没有：`Always`/`Eventually` 的不动点演算与复合规则（如 `Always (Eventually P)`）、
-compassion/公平性不变式、以及共享内存协议的活性（协议例子里的 `turn` 会让秩不再是
-单调的，需要更强的时序推理）。
+compassion/公平性不变式、以及**区域自动合成**——目前区域与 variant 都要人工给出
+（`Region` 的"到目标前稳定"要按前缀归纳证明，因为它在全局上并不被保持）。
 
 ### 9.3 其他
 
@@ -403,6 +412,7 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 | `Examples/DataRefinement` | 非恒等抽象映射、安全性沿精化传递、实现层私有不变式（`count = log.length`）、`Refines.reach` 把具体运行提升为抽象运行 |
 | `Examples/Machine` | 程序驻留状态的栈机：`choiceAll` 做指令分派、对**任意程序**成立的安全性（代码不增长）、具体运行 `[push 2, push 3, add] → [5]` |
 | `Examples/Liveness` | 公平性下的必然性（计数器必达 3）、**不公平则活性失效**的显式定理（stuttering 行为）、safety→`Always` 的桥（含互斥协议的 `Always`）、`while` 终止性与循环全正确性 |
+| `Examples/MutexLiveness` | 共享内存协议的活性：区域内的 variant（非全局单调）、"进入临界区"与"离开临界区"两个方向；后者由安全性（互斥不变式）提供区域稳定性 |
 
 ---
 
@@ -489,7 +499,31 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
   的模块，"`A` 一直可用但环境始终走 `B`"正好是弱公平被违反的情形——
   这也是 `stuck` 能被否证的原因。
 
-### 11.5 结论
+### 11.5 共享内存协议活性的实现经验
+
+把活性推到 `Mutex` 这样的共享变量协议时，暴露了三件事：
+
+1. **variant 不是全局单调的**。`rank s = if s.pc1 = 2 then 0 else 1` 在"离开临界区"
+   这一步会从 `0` 回到 `1`。原来的秩论证要求全局 `μ s' ≤ μ s`，因此必须放宽成
+   "只在不变式区域 `I` 内、且只在 `μ > 0` 时要求单调、要求 `A` 可用"
+   （`eventually_zero_of_weakFair_inv`）。这个放宽不是形式上的：`hI` 只在
+   `μ > 0` 时需要，正对应"目标一旦达成，后续状态怎样都无所谓"。
+2. **区域在全局上并不被保持**，所以 `Preserves`/`always_of_preserves` 用不上：
+   `Region ∨ pc1 = 2` 会被 `exit1` 破坏（`pc1` 变成 `0`）。真正成立的是
+   **前缀形式**："只要还没进过临界区，就一直留在区域内"，它按行为前缀归纳证明
+   （`region_until_goal`），并在证明里用"下一步 `pc1 ≠ 2`"排掉 `enter1` 这一支。
+   这也让 `eventually_enter1` 的证明要以 `by_cases (∃ N, pc1 = 2)` 开场：
+   已达成直接收工，未达成才有"全程 `μ > 0`"从而区域成立。
+3. **安全性与活性对模型的要求不同**。原来的 `Mutex` 例子把 `req1`（请求锁）写成
+   无守卫的 `update (pc1 := 1)`：安全性照样成立（它不动 `turn`），但一个处于临界区的
+   进程可以"重新请求"退回等待，区域因此不再稳定，活性证不出来。补上
+   `guard (pc1 = 0)` 后一切顺畅。**结论：安全性宽松的建模会在活性处露馅。**
+
+另外，互补方向 `leadsTo_exit1`（离开临界区）是活性**消费**安全性的例子：
+"在临界区 ⇒ 持有 turn" 这一条来自 `Mutex.inv_step` + `always_of_preserves`，
+没有它就无法排除另一进程的步骤，variant 的单调性也就证不出来。
+
+### 11.6 结论
 
 * 表达能力上，顺序、非确定（`<|>` / `nondet` / `choiceAll`）、守卫、循环、聚焦
   （`focus`/`focusView`）、精化（含 stuttering）、交错并行、构造性可达性，都能在

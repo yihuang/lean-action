@@ -205,6 +205,63 @@ theorem nonincreasing_orElse {A B : Action σ} {μ : σ → Nat}
   rw [rel_orElse] at h
   exact h.elim (hA s s') (hB s s')
 
+/-- **Fairness-based inevitability, restricted to an invariant region.**
+
+The hypotheses only have to hold on states satisfying `I`, and `I` only has to
+hold while the rank is still positive (`hI`). This is the form needed for
+shared-memory protocols, where the rank is not globally monotone: once a process
+has left the region of interest the measure may go up again, but by then it has
+already reached zero.
+
+* `henabled` gives the progress action whenever the rank is positive,
+* `hA` says a progress step strictly decreases the rank there,
+* `hdec` says no step increases it there,
+* `hfair` is weak fairness for the progress action. -/
+theorem eventually_zero_of_weakFair_inv {M : Module σ} {A : Action σ} {μ : σ → Nat}
+    {b : Behavior σ} {I : Nondet σ} (hbeh : IsBehavior M b)
+    (hI : ∀ n, μ (b n) > 0 → I (b n))
+    (hdec : ∀ s s', I s → μ s > 0 → rel M.next s s' → μ s' ≤ μ s)
+    (hA : ∀ s, I s → μ s > 0 → ∀ s', rel A s s' → μ s' < μ s)
+    (henabled : ∀ s, I s → μ s > 0 → ∃ s', rel A s s')
+    (hfair : WeakFair A b) : ∀ n, ∃ N, n ≤ N ∧ μ (b N) = 0 := by
+  have key : ∀ k, ∀ n, μ (b n) = k → ∃ N, n ≤ N ∧ μ (b N) = 0 := by
+    intro k
+    induction k using Nat.strongRecOn with
+    | ind k ih =>
+      intro n hn
+      by_cases hzero : μ (b n) = 0
+      · exact ⟨n, Nat.le_refl n, hzero⟩
+      · -- either the goal is already reached later, or the rank stays positive
+        -- along the prefix and fairness produces a decreasing step
+        by_cases hreached : ∃ N, n ≤ N ∧ μ (b N) = 0
+        · exact hreached
+        · have hposn : μ (b n) > 0 := Nat.pos_of_ne_zero hzero
+          have hpos : ∀ m, n ≤ m → μ (b m) > 0 := fun m hm =>
+            Nat.pos_of_ne_zero fun hz => hreached ⟨m, hm, hz⟩
+          have hmono_prefix : ∀ d : Nat, μ (b (n + d)) ≤ μ (b n) := by
+            intro d
+            induction d with
+            | zero => exact Nat.le_refl _
+            | succ d ihd =>
+              have hd : μ (b (n + d)) > 0 := hpos _ (Nat.le_add_right n d)
+              have hstep : μ (b (n + d + 1)) ≤ μ (b (n + d)) := by
+                have := hdec (b (n + d)) (b (n + d + 1)) (hI _ hd) hd (hbeh (n + d))
+                simpa [Nat.add_assoc] using this
+              exact Nat.le_trans hstep ihd
+          have hen : ∀ m, n ≤ m → ∃ s', rel A (b m) s' :=
+            fun m hm => henabled _ (hI _ (hpos m hm)) (hpos m hm)
+          obtain ⟨m, hnm, htaken⟩ := hfair n hen
+          have hposm : μ (b m) > 0 := hpos m hnm
+          have hlt : μ (b (m + 1)) < μ (b m) := hA _ (hI _ hposm) hposm _ htaken
+          have hle : μ (b m) ≤ μ (b n) := by
+            have hd : n + (m - n) = m := by omega
+            simpa [hd] using hmono_prefix (m - n)
+          have hltk : μ (b (m + 1)) < k := by omega
+          obtain ⟨N, hN, hz⟩ := ih (μ (b (m + 1))) hltk (m + 1) rfl
+          exact ⟨N, Nat.le_trans (Nat.le_trans hnm (Nat.le_succ m)) hN, hz⟩
+  intro n
+  exact key (μ (b n)) n rfl
+
 /-- **Fairness-based inevitability.** If the progress action `A` strictly
 decreases the rank while the goal is not reached, every module step keeps the
 rank from increasing, `A` stays enabled as long as the rank is positive, and the
@@ -213,46 +270,31 @@ time. -/
 theorem eventually_zero_of_weakFair {M : Module σ} {A : Action σ} {μ : σ → Nat}
     {b : Behavior σ} (hbeh : IsBehavior M b)
     (hA : ∀ s, μ s > 0 → ∀ s', rel A s s' → μ s' < μ s)
-    (henv : ∀ s s', rel M.next s s' → μ s' ≤ μ s)
+    (henv : ∀ s s', μ s > 0 → rel M.next s s' → μ s' ≤ μ s)
     (henabled : ∀ s, μ s > 0 → ∃ s', rel A s s')
-    (hfair : WeakFair A b) : ∀ n, ∃ N, n ≤ N ∧ μ (b N) = 0 := by
-  have hmono : ∀ k, μ (b (k + 1)) ≤ μ (b k) := fun k => henv _ _ (hbeh k)
-  have hmono' : ∀ {a c : Nat}, a ≤ c → μ (b c) ≤ μ (b a) :=
-    nat_le_of_nonincr (f := fun k => μ (b k)) hmono
-  have key : ∀ k, ∀ n, μ (b n) = k → ∃ N, n ≤ N ∧ μ (b N) = 0 := by
-    intro k
-    induction k using Nat.strongRecOn with
-    | ind k ih =>
-      intro n hn
-      by_cases hzero : μ (b n) = 0
-      · exact ⟨n, Nat.le_refl n, hzero⟩
-      · -- either the goal is reached later, or the rank stays positive and `A`
-        -- is continuously enabled, so fairness produces a decreasing step
-        by_cases hreached : ∃ N, n ≤ N ∧ μ (b N) = 0
-        · exact hreached
-        · have hen : ∀ m, n ≤ m → ∃ s', rel A (b m) s' := by
-            intro m hm
-            refine henabled _ (Nat.pos_of_ne_zero ?_)
-            intro hz
-            exact hreached ⟨m, hm, hz⟩
-          obtain ⟨m, hnm, htaken⟩ := hfair n hen
-          have hposm : μ (b m) > 0 := by
-            refine Nat.pos_of_ne_zero ?_
-            intro hz
-            exact hreached ⟨m, hnm, hz⟩
-          have hlt : μ (b (m + 1)) < μ (b m) := hA _ hposm _ htaken
-          have hle : μ (b m) ≤ μ (b n) := hmono' hnm
-          have hltk : μ (b (m + 1)) < k := by omega
-          obtain ⟨N, hN, hz⟩ := ih (μ (b (m + 1))) hltk (m + 1) rfl
-          exact ⟨N, Nat.le_trans (Nat.le_trans hnm (Nat.le_succ m)) hN, hz⟩
-  intro n
-  exact key (μ (b n)) n rfl
+    (hfair : WeakFair A b) : ∀ n, ∃ N, n ≤ N ∧ μ (b N) = 0 :=
+  eventually_zero_of_weakFair_inv (I := fun _ => True) hbeh
+    (fun _ _ => trivial)
+    (fun s s' _ hs h => henv s s' hs h)
+    (fun s _ hs s' h => hA s hs s' h)
+    (fun s _ hs => henabled s hs)
+    hfair
+
+/-- `LeadsTo` form of `eventually_zero_of_weakFair_inv`. -/
+theorem leadsTo_zero_of_weakFair_inv {M : Module σ} {A : Action σ} {μ : σ → Nat}
+    {b : Behavior σ} {I : Nondet σ} (hbeh : IsBehavior M b)
+    (hI : ∀ n, μ (b n) > 0 → I (b n))
+    (hdec : ∀ s s', I s → μ s > 0 → rel M.next s s' → μ s' ≤ μ s)
+    (hA : ∀ s, I s → μ s > 0 → ∀ s', rel A s s' → μ s' < μ s)
+    (henabled : ∀ s, I s → μ s > 0 → ∃ s', rel A s s')
+    (hfair : WeakFair A b) : LeadsTo (fun _ : σ => True) (fun s => μ s = 0) b :=
+  fun n _ => eventually_zero_of_weakFair_inv hbeh hI hdec hA henabled hfair n
 
 /-- `LeadsTo` form of `eventually_zero_of_weakFair`. -/
 theorem leadsTo_zero_of_weakFair {M : Module σ} {A : Action σ} {μ : σ → Nat}
     {b : Behavior σ} (hbeh : IsBehavior M b)
     (hA : ∀ s, μ s > 0 → ∀ s', rel A s s' → μ s' < μ s)
-    (henv : ∀ s s', rel M.next s s' → μ s' ≤ μ s)
+    (henv : ∀ s s', μ s > 0 → rel M.next s s' → μ s' ≤ μ s)
     (henabled : ∀ s, μ s > 0 → ∃ s', rel A s s')
     (hfair : WeakFair A b) : LeadsTo (fun _ : σ => True) (fun s => μ s = 0) b :=
   fun n _ => eventually_zero_of_weakFair hbeh hA henv henabled hfair n

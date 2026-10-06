@@ -5,3 +5,4 @@ import Examples.Hoare
 import Examples.DataRefinement
 import Examples.Machine
 import Examples.Liveness
+import Examples.MutexLiveness
