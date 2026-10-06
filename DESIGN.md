@@ -312,6 +312,44 @@ theorem mutex_not_disjoint : ¬ Disjoint mutexP₁ mutexP₂
 与 §5.2 的关系：积状态版是"框架条件被状态类型硬化"的特例，`disjoint_fst_snd`
 就是 `Lens.fst`/`Lens.snd` 的不交性证明。
 
+**足迹相交时：rely/guarantee。** `Disjoint` 说"环境碰不到我的足迹"。把它换成
+**关系**而不是**足迹**，就得到 rely/guarantee：每个分量只声明它对环境的假设
+（rely），组合规则只要求"我的步被对方的 rely 允许"：
+
+```lean
+structure Compatible (I : Nondet σ) (A₁ A₂ : Action σ) (R₁ R₂ : Rel σ σ) : Prop where
+  left  : ∀ s s', I s → rel A₁ s s' → R₂ s s'    -- 分量 1 的步被 R₂ 允许
+  right : ∀ s s', I s → rel A₂ s s' → R₁ s s'
+
+theorem Preserves.orElse_of_compatible (hc : Compatible I A₁ A₂ R₁ R₂)
+    (h₁ : ∀ s s', I s → R₁ s s' → I s') (h₂ : ∀ s s', I s → R₂ s s') :
+    Preserves (A₁ <|> A₂) I
+```
+
+两条稳定性义务只提到 **接口** `R₁`/`R₂`，从不提到对方分量的代码——这就是它的价值
+（模块化：另一分量换实现，只要仍满足接口，本分量的证明不动）。对**状态不变式**而言
+它换来的是模块化而不是更短的证明（见 §11.9 的不可行性论证）；真正改变证明形状的是
+**前缀性质**（"某区域保持到目标达成"）：
+
+```lean
+theorem relyGuarantee_until (hbeh : ∀ n, rel (A₁ <|> A₂) (b n) (b (n+1)))
+    (h₁ : ∀ s s', I s → rel A₁ s s' → I s' ∨ G s')     -- 分量自己的保证
+    (h₂ : ∀ s s', I s → rel A₂ s s' → I s')            -- 环境的 rely
+    (h₀ : I (b 0)) : ∀ n, (∀ j, j ≤ n → ¬ G (b j)) → I (b n)
+```
+
+`Examples/MutexLiveness.region_until_goal` 现在就是这条定理的实例：原来的
+"六路 `action_simp; grind` + 手写前缀归纳"被拆成两个接口引理（进程 1 的保证、
+进程 2 的 rely），归纳交给库。
+
+**同步（同时执行）**：`ViewModule.sync` 让两个分量一起走一步，
+`Disjoint.set_set` 保证两次更新的顺序无所谓，`sync_preserves`/`sync_proj` 说明
+两个分量的不变式都被保持、且每个投影**恰好**前进（不像交错那样可能 stutter）。
+注意 lock-step 组合要求两边都能走步。
+
+**自动化**：`disjoint_auto` 一条 tactic 关掉结构字段 view 的 `Disjoint` 目标
+（逐点展开 + `cases` + `rfl`）。
+
 ## 6. 证明层：只有一个归纳引擎
 
 ```lean
@@ -464,10 +502,15 @@ compassion/公平性不变式、以及**区域自动合成**——目前区域�
 ### 9.3 其他
 
 * **Lens 派生**：`deriving` handler 或 `lens!` 宏（见 §5.1）。
-* **并行语义**：交错语义有两层——积状态（`interleave`，§5.2）与共享状态 +
-  不交足迹（`Frame.lean`，§5.4）。仍缺：(a) **rely/guarantee**（足迹相交，如 mutex
-  的 `turn`）；(b) **同步/同时执行**的组合子（`Disjoint.set_set` 已经备好，但没有
-  `sync` 组合子）；(c) 足迹的自动化推断（目前 `Disjoint` 要手写或 `cases s; rfl`）。
+* **并行语义**：已有四层——积状态（`interleave`，§5.2）、共享状态 + 不交足迹
+  （`ViewModule.parallel`）、**rely/guarantee**（`Compatible` +
+  `Preserves.orElse_of_compatible`，用于足迹相交，由 `Examples/RelyGuarantee`
+  与 `Examples/MutexLiveness` 使用）、**同步**（`ViewModule.sync`）。仍缺：
+  (a) **rely 的自动推断/发现**（目前手写，且通常要反复试）；
+  (b) **非状态型 rely 的系统化支持**（本研究里 rely 都是 `σ → σ → Prop`，
+  但如何从代码自动生成/验证一个合适的 rely 没有方法论支持）；
+  (c) **同步组合的活性**（现在只有安全性）；
+  (d) 足迹推断只做到"逐点 `cases`+`rfl`"（`disjoint_auto`），复杂 view 仍需手写。
 * **不变式合成**：现在需要人工给出 `inv`；`Module.safe_of_invariant` 的形状已经
   适合接入 IC3/Houdini 式的不变式猜测。
 * **`grind` 依赖**：`action_simp` 的兜底是 Lean core 的 `grind`；若某处不适用，
@@ -494,7 +537,8 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 | `Examples/Liveness` | 公平性下的必然性（计数器必达 3）、**不公平则活性失效**的显式定理（stuttering 行为）、safety→`Always` 的桥（含互斥协议的 `Always`）、`while` 终止性与循环全正确性 |
 | `Examples/MutexLiveness` | 共享内存协议的活性：区域内的 variant（非全局单调）、"进入临界区"与"离开临界区"两个方向；后者由安全性（互斥不变式）提供区域稳定性 |
 | `Examples/ParallelLiveness` | 交错并行的活性组合：分量活性（经投影 + 公平性传递 + 序列级秩论证）合成乘积活性，反面例子说明右分量公平假设不可省 |
-| `Examples/Frame` | 共享 record 上的不交足迹组合：框架条件作为证明义务、框架定理给出组合安全性（每半只在自己的状态类型上证）、组合活性、以及 `¬ Disjoint` 说明了 mutex 为何超出本层 |
+| `Examples/Frame` | 共享 record 上的不交足迹组合：框架条件作为证明义务、框架定理给出组合安全性（每半只在自己的状态类型上证）、组合活性、同步组合（`sync`），以及 `¬ Disjoint` 说明了 mutex 为何超出本层 |
+| `Examples/RelyGuarantee` | 足迹**相交**时用接口组合：`Compatible` + `Preserves.orElse_of_compatible`（每个分量只对自己的接口负责）、`¬ Disjoint` 说明框架层为何不适用 |
 
 ---
 
@@ -684,7 +728,37 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
   是一句断言，而是一个一行的反例证明——这和上一轮 `liveness_needs_fairness` 是同一
   个套路：把"做不到"形式化。
 
-### 11.9 结论
+### 11.9 rely/guarantee 与同步组合：经验
+
+* **R/G 在"前缀性质"上才真正省事。** `Examples/MutexLiveness` 里原来的
+  `region_until_goal` 是"六路 `action_simp; grind` + 手写前缀归纳"；换成
+  R/G 之后是两条各自只看一侧的接口引理（`region_steps1` 是分量自己的保证、
+  `region_steps2` 是环境的 rely，后者完全不提 `steps1`）+ 库里的
+  `relyGuarantee_until` 负责归纳。而 mutex 的**安全性**（`inv_step`）用 R/G 写
+  并不更短——见下一条。
+* **对状态不变式，R/G 换来的是模块化，不是更短。** 我试着重做一个"共享 cell × 两个
+  分量"的安全例子，结论很清楚：若某个分量的**无守卫**步能从某个 `I` 状态破坏 `I`，
+  任何 rely 都救不了它——rely 约束的是**环境的转移**，不是**当前状态**
+  （这条"不可行性"其实正是组合规则的可靠性所在）。所以安全例子的价值在于
+  *义务只提接口*（`Examples/RelyGuarantee` 里两个方向各自只看对方的分量），
+  而不是证明长度。
+* **`sync` 又踩了一次同一个 defeq 坑**：`rel` 的等式是 `z = (Done.mk, x)` 而
+  用户想说的是 `s' = x`，两者需要 `Prod.mk.injEq`，不是 defeq。这是第三次
+  （`rel_focusView`、`rel_lift`、现在 `rel_sync`），处理方式也一样：`unfold rel` 后
+  手动 `rintro` + `congrArg Prod.snd`。**结论**：给新动作写"关系展开"引理时，默认
+  不要指望 `Iff.rfl`，先想清楚 `Done`/`Prod` 那一层。
+* **`<|>` 出现在期望类型是 `Prop` 的位置会解析成 `HOrElse Prop ...`**：
+  `theorem next_eq : next = a <|> b <|> c := ...` 会报
+  "failed to synthesize HOrElse Prop (Action St)"。把这类"等价性"引理写成
+  `rel` 层面的 `↔`（`rel next s s' ↔ rel (a <|> b) s s'`）就不会触发——这也更贴近
+  这个库的语义层。顺便，`Action.ext` 这种"命名空间前缀"写法也不可行（`Action`
+  是 notation 不是命名空间）。
+* **`sync` 需要 `abbrev` 而不是 `def`**：`def` 下 `Iff.rfl` 无法把 `rel (M₁.sync M₂) s s'`
+  归约到展开形式（`rel` 的 `Done` 那层挡住了），`abbrev` 让 delta 在
+  定义等价检查里发生，`rel_sync` 才可能写成 `Iff.rfl`……实际上即便 `abbrev`
+  也仍需手动 `Prod.snd`（见上一条），但 `abbrev` 让其它地方少写 `unfold`。
+
+### 11.10 结论
 
 * 表达能力上，顺序、非确定（`<|>` / `nondet` / `choiceAll`）、守卫、循环、聚焦
   （`focus`/`focusView`）、精化（含 stuttering）、交错并行、构造性可达性，都能在

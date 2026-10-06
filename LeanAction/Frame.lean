@@ -263,4 +263,145 @@ theorem parallel_leadsTo (hd : Disjoint M₁.view M₂.view) {P : Nondet α} {Q 
 
 end ViewModule
 
+/-! ## Rely/guarantee interfaces
+
+`Disjoint` says the environment cannot touch my footprint. Rely/guarantee weakens
+this: instead of a footprint, a component declares a **rely** relation (what it
+assumes about the environment's steps); the composition rule asks only that each
+component's steps are permitted by the other's rely, relative to the invariant.
+This is what lets components whose footprints genuinely overlap — the mutex
+`turn` — still be composed, and it is also what a *prefix* stability proof
+(the region that must hold "until the goal is reached") needs. -/
+
+/-- Two components are compatible with a pair of relies, relative to `I`: each
+one's steps are permitted by the other's rely. -/
+structure Compatible (I : Nondet σ) (A₁ A₂ : Action σ) (R₁ R₂ : Rel σ σ) : Prop where
+  left : ∀ s s', I s → rel A₁ s s' → R₂ s s'
+  right : ∀ s s', I s → rel A₂ s s' → R₁ s s'
+
+theorem Compatible.symm {I : Nondet σ} {A₁ A₂ : Action σ} {R₁ R₂ : Rel σ σ}
+    (h : Compatible I A₁ A₂ R₁ R₂) : Compatible I A₂ A₁ R₂ R₁ :=
+  ⟨h.right, h.left⟩
+
+/-- **Rely/guarantee composition.** If `I` is stable under both relies and each
+component's steps are allowed by the other's rely, then the interleaving preserves
+`I`. The two stability obligations mention only the *interfaces* — never the other
+component's code. -/
+theorem Preserves.orElse_of_compatible {A₁ A₂ : Action σ} {I : Nondet σ} {R₁ R₂ : Rel σ σ}
+    (hc : Compatible I A₁ A₂ R₁ R₂) (h₁ : ∀ s s', I s → R₁ s s' → I s')
+    (h₂ : ∀ s s', I s → R₂ s s' → I s') : Preserves (A₁ <|> A₂) I := by
+  intro s hs s' hstep
+  rw [rel_orElse] at hstep
+  rcases hstep with h | h
+  · exact h₂ s s' hs (hc.left s s' hs h)
+  · exact h₁ s s' hs (hc.right s s' hs h)
+
+/-- **Prefix stability, relying on the environment.** `I` holds until `G` is
+reached: the component's own steps keep `I` or reach `G`, and the environment's
+steps keep `I` (its rely, i.e. `A₂ ⊆ (I → I)` here). This is the temporal
+companion of `Preserves.orElse_of_compatible`, and it is what a "region that must
+hold until the goal" proof needs. -/
+theorem relyGuarantee_until {A₁ A₂ : Action σ} {I G : Nondet σ} {b : Behavior σ}
+    (hbeh : ∀ n, rel (A₁ <|> A₂) (b n) (b (n + 1)))
+    (h₁ : ∀ s s', I s → rel A₁ s s' → I s' ∨ G s')
+    (h₂ : ∀ s s', I s → rel A₂ s s' → I s')
+    (h₀ : I (b 0)) : ∀ n, (∀ j, j ≤ n → ¬ G (b j)) → I (b n) := by
+  intro n
+  induction n with
+  | zero => intro _; exact h₀
+  | succ n ih =>
+    intro hG
+    have hIn : I (b n) := ih fun j hj => hG j (Nat.le_trans hj (Nat.le_succ n))
+    have hstep := hbeh n
+    rw [rel_orElse] at hstep
+    rcases hstep with h | h
+    · rcases h₁ _ _ hIn h with h' | h'
+      · exact h'
+      · exact absurd h' (hG (n + 1) (Nat.le_refl _))
+    · exact h₂ _ _ hIn h
+
+/-! ## Synchronous composition
+
+Both components step at once. `Disjoint.set_set` is what makes the result
+independent of the order in which the two updates are applied. -/
+
+namespace ViewModule
+
+variable {M₁ : ViewModule σ α} {M₂ : ViewModule σ β}
+
+/-- Simultaneous execution: both components take a step. An `abbrev` so that its
+relation unfolds definitionally (the individual laws below are still `Iff.rfl`). -/
+abbrev sync (M₁ : ViewModule σ α) (M₂ : ViewModule σ β) : Action σ :=
+  fun s z => ∃ a' b', rel M₁.next (M₁.view.get s) a' ∧ rel M₂.next (M₂.view.get s) b' ∧
+    z = (Done.mk, M₂.view.set (M₁.view.set s a') b')
+
+theorem rel_sync {s s' : σ} :
+    rel (M₁.sync M₂) s s' ↔ ∃ a' b', rel M₁.next (M₁.view.get s) a' ∧
+      rel M₂.next (M₂.view.get s) b' ∧ s' = M₂.view.set (M₁.view.set s a') b' := by
+  unfold rel sync
+  constructor
+  · rintro ⟨a', b', ha', hb', hz⟩
+    exact ⟨a', b', ha', hb', congrArg Prod.snd hz⟩
+  · rintro ⟨a', b', ha', hb', hs'⟩
+    exact ⟨a', b', ha', hb', by rw [hs']⟩
+
+/-- The order of the two updates is irrelevant, thanks to `Disjoint.set_set`. -/
+theorem sync_set_comm (hd : Disjoint M₁.view M₂.view) (s : σ) (a' : α) (b' : β) :
+    M₂.view.set (M₁.view.set s a') b' = M₁.view.set (M₂.view.set s b') a' :=
+  (hd.set_set s a' b').symm
+
+/-- **Synchronous frame theorem.** Both invariants are preserved, and each
+component's projection after the step really is its own successor. -/
+theorem sync_preserves {P : Nondet α} {Q : Nondet β} (hd : Disjoint M₁.view M₂.view)
+    (hP : Preserves M₁.next P) (hQ : Preserves M₂.next Q) :
+    Preserves (M₁.sync M₂) (fun s => P (M₁.view.get s) ∧ Q (M₂.view.get s)) := by
+  intro s hs s' hr
+  obtain ⟨a', b', ha', hb', hs'⟩ := rel_sync.mp hr
+  refine ⟨?_, ?_⟩
+  · rw [hs', hd.set_get, M₁.get_set]
+    exact hP _ hs.1 _ ha'
+  · rw [hs', sync_set_comm hd s a' b', hd.get_set, M₂.get_set]
+    exact hQ _ hs.2 _ hb'
+
+/-- After a simultaneous step each projection is *exactly* its own successor
+(this is what `sync` is for, as opposed to the interleaving where a projected step
+may stutter). -/
+theorem sync_proj (hd : Disjoint M₁.view M₂.view) {s s' : σ} (hr : rel (M₁.sync M₂) s s') :
+    ∃ a' b', rel M₁.next (M₁.view.get s) a' ∧ M₁.view.get s' = a' ∧
+      rel M₂.next (M₂.view.get s) b' ∧ M₂.view.get s' = b' := by
+  obtain ⟨a', b', ha', hb', hs'⟩ := rel_sync.mp hr
+  refine ⟨a', b', ha', ?_, hb', ?_⟩
+  · rw [hs', hd.set_get, M₁.get_set]
+  · rw [hs', sync_set_comm (M₁ := M₁) (M₂ := M₂) hd, hd.get_set, M₂.get_set]
+
+/-- The lock-step composition as a module. Note that both components must be able
+to move: `sync` has no step when one of them is stuck. -/
+def syncModule (M₁ : ViewModule σ α) (M₂ : ViewModule σ β) : Module σ where
+  init := fun s => M₁.init s ∧ M₂.init s
+  next := M₁.sync M₂
+
+theorem syncModule_safe {P : Nondet α} {Q : Nondet β} (hd : Disjoint M₁.view M₂.view)
+    (hinit₁ : ∀ s, M₁.init s → P (M₁.view.get s))
+    (hinit₂ : ∀ s, M₂.init s → Q (M₂.view.get s))
+    (hP : Preserves M₁.next P) (hQ : Preserves M₂.next Q) :
+    (M₁.syncModule M₂).Safe (fun s => P (M₁.view.get s) ∧ Q (M₂.view.get s)) := by
+  apply Module.safe_of_preserves
+  · intro s hs
+    exact ⟨hinit₁ s hs.1, hinit₂ s hs.2⟩
+  · exact sync_preserves hd hP hQ
+
+end ViewModule
+
+/-! ## Proving disjointness for structure views
+
+Views for structure fields are definitionally pointwise, so their disjointness is
+`cases` plus `rfl`. -/
+
+/-- Prove a `Disjoint` goal for views written as structure updates. -/
+macro "disjoint_auto" : tactic =>
+  `(tactic| (refine ⟨?_, ?_, ?_⟩ <;>
+    first
+      | (intro s a b; try cases s; try cases a; try cases b; rfl)
+      | (intro s a; try cases s; try cases a; rfl)))
+
 end LeanAction

@@ -48,8 +48,22 @@ def enter2 : Action St :=
 def exit2 : Action St :=
   guard (fun s => s.pc2 = 2) ;; update (fun s => { s with pc2 := 0, turn := 1 })
 
-/-- One step is any of the six process steps. -/
-def next : Action St := req1 <|> enter1 <|> exit1 <|> req2 <|> enter2 <|> exit2
+/-- Process 1's own steps. -/
+def steps1 : Action St := req1 <|> enter1 <|> exit1
+
+/-- Process 2's own steps. -/
+def steps2 : Action St := req2 <|> enter2 <|> exit2
+
+/-- One step is any of the six process steps, i.e. the interleaving of the two
+processes — the shape rely/guarantee composition wants. -/
+def next : Action St := steps1 <|> steps2
+
+/-- The interleaving is the same relation as the flat six-way disjunction. -/
+theorem next_eq_flat {s s' : St} :
+    rel next s s' ↔
+      rel (req1 <|> enter1 <|> exit1 <|> req2 <|> enter2 <|> exit2) s s' := by
+  simp only [next, steps1, steps2, rel_orElse]
+  grind
 
 def init : Nondet St := fun s => s.pc1 = 0 ∧ s.pc2 = 0 ∧ (s.turn = 1 ∨ s.turn = 2)
 
@@ -62,7 +76,7 @@ def M : Module St := ⟨init, next⟩
 all six steps, including the two `exit` steps that *change* `turn`. -/
 theorem inv_step : Preserves next inv := by
   inv_induct
-  simp only [next, req1, enter1, exit1, req2, enter2, exit2, inv] at *
+  simp only [next, steps1, steps2, req1, enter1, exit1, req2, enter2, exit2, inv] at *
   action_simp
   grind
 
@@ -87,15 +101,15 @@ theorem p1_can_enter :
     Reach M.next ⟨0, 0, 1⟩ ⟨2, 1, 1⟩ := by
   -- req1, enter1, req2
   have h1 : rel next ⟨0, 0, 1⟩ ⟨1, 0, 1⟩ := by
-    simp only [next, req1, enter1, exit1, req2, enter2, exit2]
+    simp only [next, steps1, steps2, req1, enter1, exit1, req2, enter2, exit2]
     action_simp
     grind
   have h2 : rel next ⟨1, 0, 1⟩ ⟨2, 0, 1⟩ := by
-    simp only [next, req1, enter1, exit1, req2, enter2, exit2]
+    simp only [next, steps1, steps2, req1, enter1, exit1, req2, enter2, exit2]
     action_simp
     grind
   have h3 : rel next ⟨2, 0, 1⟩ ⟨2, 1, 1⟩ := by
-    simp only [next, req1, enter1, exit1, req2, enter2, exit2]
+    simp only [next, steps1, steps2, req1, enter1, exit1, req2, enter2, exit2]
     action_simp
     grind
   exact (Reach.step (Reach.step (Reach.single h1) h2) h3)
@@ -123,7 +137,7 @@ theorem pc_bounds : M.Safe (fun s => s.pc1 ≤ 2 ∧ s.pc2 ≤ 2) := by
     simp only [M, init] at hs ⊢
     grind
   · inv_induct
-    simp only [M, next, req1, enter1, exit1, req2, enter2, exit2] at *
+    simp only [M, next, steps1, steps2, req1, enter1, exit1, req2, enter2, exit2] at *
     action_simp
     grind
 

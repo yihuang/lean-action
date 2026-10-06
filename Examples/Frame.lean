@@ -40,10 +40,7 @@ def fp₂ : View Two (Nat × List Nat) :=
 
 /-- **The frame assumption**, as a proof obligation: the two footprints do not
 interfere. -/
-theorem disjoint_fp : Disjoint fp₁ fp₂ where
-  get_set := by intro s a; cases s; rfl
-  set_get := by intro s b; cases s; rfl
-  set_set := by intro s a b; cases s; rfl
+theorem disjoint_fp : Disjoint fp₁ fp₂ := by disjoint_auto
 
 /-! ## The components, each described on its own state type -/
 
@@ -166,6 +163,30 @@ theorem two_live (b : Behavior Two) (hbeh : IsBehavior (C₁.parallel C₂) b)
       (ViewModule.isBehavior_parallel_swap hbeh)
       (fun _ _ h => step_increments h) (fun _ => step_enabled _) hf₂)
   show LeadsTo (fun _ : Two => True) (fun s : Two => s.n₁ ≥ 3 ∧ s.n₂ ≥ 4) b
+  exact h
+
+/-! ## Stepping together (synchronous composition)
+
+`ViewModule.sync` runs both components in lock-step. `Disjoint.set_set` is what
+makes the two updates order-independent, and — unlike the interleaving — a
+simultaneous step advances *both* projections. -/
+
+theorem sync_advances_both (s s' : Two) (h : rel (C₁.sync C₂) s s') :
+    s'.n₁ = s.n₁ + 1 ∧ s'.n₂ = s.n₂ + 1 := by
+  obtain ⟨a', b', ha', h₁, hb', h₂⟩ := ViewModule.sync_proj disjoint_fp h
+  have h₁' : s'.n₁ = a'.1 := by simpa [C₁, fp₁] using congrArg Prod.fst h₁
+  have h₂' : s'.n₂ = b'.1 := by simpa [C₂, fp₂] using congrArg Prod.fst h₂
+  refine ⟨?_, ?_⟩
+  · rw [h₁', step_increments ha']
+    rfl
+  · rw [h₂', step_increments hb']
+    rfl
+
+theorem two_sync_safe : (C₁.syncModule C₂).Safe
+    (fun s : Two => s.n₁ = s.l₁.length ∧ s.n₂ = s.l₂.length) := by
+  have h := ViewModule.syncModule_safe (M₁ := C₁) (M₂ := C₂) disjoint_fp
+    init_fp₁ init_fp₂ inv_step inv_step
+  show (C₁.syncModule C₂).Safe (fun s : Two => s.n₁ = s.l₁.length ∧ s.n₂ = s.l₂.length)
   exact h
 
 /-! ## Where the frame assumption fails: the mutex protocol

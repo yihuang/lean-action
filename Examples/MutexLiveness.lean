@@ -25,7 +25,7 @@ open LeanAction
 
 namespace Examples.MutexLiveness
 
-open Examples.Mutex (St M next req1 enter1 exit1 req2 enter2 exit2)
+open Examples.Mutex (St M next steps1 steps2 req1 enter1 exit1 req2 enter2 exit2)
 
 /-- Process 1 is waiting and holds the turn, and process 2 is not in the critical
 section. -/
@@ -45,22 +45,37 @@ theorem rank_pos_iff {s : St} : rank s > 0 ↔ s.pc1 ≠ 2 := by
 
 /-! ## The region is stable until the goal is reached -/
 
+/-- Process 1's **own** contribution: from the region its steps stay in the region
+or take the critical section (its guarantee). -/
+theorem region_steps1 {s s' : St} (hs : Region s) (h : rel steps1 s s') :
+    Region s' ∨ s'.pc1 = 2 := by
+  simp only [steps1, req1, enter1, exit1, Region] at hs h ⊢
+  action_simp
+  grind
+
+/-- The **environment interface** process 1 is allowed to assume: process 2's
+steps never leave the region. This is the rely/guarantee obligation for the
+environment, stated without any reference to `steps1`. -/
+theorem region_steps2 {s s' : St} (hs : Region s) (h : rel steps2 s s') : Region s' := by
+  simp only [steps2, req2, enter2, exit2, Region] at hs h ⊢
+  action_simp
+  grind
+
 /-- As long as process 1 has not entered the critical section, it stays in the
-region. The only enabled steps from the region are `req2` (which keeps the
-region) and `enter1` (which is exactly the goal). -/
+region. Same statement as a hand-rolled prefix induction would give, but the
+six-way case analysis is replaced by the two interface lemmas above — process 1's
+own guarantee (`region_steps1`) and the environment's rely (`region_steps2`) — with
+`relyGuarantee_until` doing the induction. -/
 theorem region_until_goal (b : Behavior St) (hbeh : IsBehavior M b) (h0 : Region (b 0)) :
     ∀ n, (∀ j, j ≤ n → (b j).pc1 ≠ 2) → Region (b n) := by
-  intro n
-  induction n with
-  | zero => intro _; exact h0
-  | succ n ih =>
-    intro hpre
-    have hRn : Region (b n) := ih fun j hj => hpre j (Nat.le_trans hj (Nat.le_succ n))
-    have hne : (b (n + 1)).pc1 ≠ 2 := hpre (n + 1) (Nat.le_refl _)
-    have hstep := hbeh n
-    simp only [M, next, req1, enter1, exit1, req2, enter2, exit2, Region] at hRn hstep ⊢
-    action_simp
-    grind
+  have hbeh' : ∀ n, rel (steps1 <|> steps2) (b n) (b (n + 1)) := by
+    intro n
+    have := hbeh n
+    rwa [M, Module.next] at this
+  exact relyGuarantee_until hbeh'
+    (fun s s' hs h => region_steps1 hs h)
+    (fun s s' hs h => region_steps2 hs h)
+    h0
 
 /-! ## Liveness of process 1 -/
 
