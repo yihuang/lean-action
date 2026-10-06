@@ -31,6 +31,7 @@ LeanAction/Action.lean   DSL 核心：ActionM、Action、原语、组合子、re
 LeanAction/Lens.lean     模块化：Lens、View、focus、积状态 lift、交错并行
 LeanAction/Proof.lean    证明层：Reach、Preserves、Hoare、Module、Refines
 LeanAction/Tactic.lean   自动化：action_simp、step、inv_induct、safe_induct
+LeanAction/Liveness.lean 时序层：Always / Eventually / LeadsTo、行为、公平性、秩论证
 Examples/                计数器、嵌套结构、while、交错并行、精化
 ```
 
@@ -353,10 +354,25 @@ theorem twoCounters_safe : twoCounters.Safe inv := by
 
 ### 9.2 时序与活性
 
-当前只有 **safety**（不变式）与偏正确性 Hoare 三元组，没有
-`Always`/`Eventually`/`LeadsTo`/公平性。设计上的接入点是：
-`Behavior σ := Nat → σ`，`Always P b := ∀ n, P (b n)`，活性则需要
-"公平调度"假设下的 well-founded 论证。`Reach` 已经为这部分预留了接口。
+已实现（`LeanAction/Liveness.lean`），分两层：
+
+* **时序谓词**：`Behavior σ := Nat → σ`、`Always P b := ∀ n, P (b n)`、
+  `Eventually P b := ∃ n, P (b n)`、`LeadsTo P Q b`（任意时刻起最终），
+  以及 `IsBehavior` / `IsRun`。safety 与时序的桥是 `always_of_safe`：
+  `M.Safe P` + 从初态出发的行为 ⇒ `Always P b`。
+* **公平性下的必然性**：`TakesStep`、`WeakFair`、`StrongFair`
+  （以及 `StrongFair.toWeakFair`），加上秩论证
+  `eventually_zero_of_nat_progress_from` / `leadsTo_zero_of_weakFair`：
+  若进展动作 `A` 在目标未达时严格减小 `μ : σ → Nat`、所有步不增大 `μ`、
+  `A` 在 `μ > 0` 时始终可用，且行为对 `A` 弱公平，则 `μ` 最终归零
+  （且"从任意时刻起"成立，因而可写成 `LeadsTo`）。
+* **循环终止性**：`loop_can_exit` 用 variant 给出 `while` 的"存在终止运行"，
+  与 `Hoare.loop`（偏正确性）组合即得循环的**全正确性**
+  （见 `Examples/Liveness.lean` 的 `countTo3_total`）。
+
+仍然没有：`Always`/`Eventually` 的不动点演算与复合规则（如 `Always (Eventually P)`）、
+compassion/公平性不变式、以及共享内存协议的活性（协议例子里的 `turn` 会让秩不再是
+单调的，需要更强的时序推理）。
 
 ### 9.3 其他
 
@@ -386,6 +402,7 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 | `Examples/Hoare` | 偏正确性：`Hoare.iterate`（算术后置条件）、`Hoare.loop`（while + 退出条件）、`Hoare.nondet`、`Hoare.focusView`（聚焦三元组） |
 | `Examples/DataRefinement` | 非恒等抽象映射、安全性沿精化传递、实现层私有不变式（`count = log.length`）、`Refines.reach` 把具体运行提升为抽象运行 |
 | `Examples/Machine` | 程序驻留状态的栈机：`choiceAll` 做指令分派、对**任意程序**成立的安全性（代码不增长）、具体运行 `[push 2, push 3, add] → [5]` |
+| `Examples/Liveness` | 公平性下的必然性（计数器必达 3）、**不公平则活性失效**的显式定理（stuttering 行为）、safety→`Always` 的桥（含互斥协议的 `Always`）、`while` 终止性与循环全正确性 |
 
 ---
 
@@ -449,7 +466,30 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 8. **循环的终止性仍无**：`Preserves.loop`/`Hoare.loop` 只做偏正确性；活性（fairness,
    `Eventually`）不在当前范围内（§9.2）。
 
-### 11.4 结论
+### 11.4 活性层带来的额外经验
+
+* **核心引理不能用 `Nat.find`**：`import Std` 下没有 `Nat.find/find_spec/min'`，
+  也没有 `Nat.strong_induction_on`、`Nat.le_induction`。`LeanAction` 零依赖的
+  约束因此把秩论证改成 **`Nat.strongRecOn` 上的良基递归**：从"当前秩 > 0"
+  出发，用公平性产生一次严格下降，再对更小的秩递归（`eventually_zero_of_nat_progress_from`）。
+  这反而比"取序列最小值"更短，也不需要最小元存在性的引理。
+* **`by_contra` 不在 core**（属于 Mathlib）：活性的反证风格要改成
+  `by_cases` + `absurd`（见 `eventually_iff_not_always_not`）。
+* **公平性必须被显式否证一次**：`Examples/Liveness.stuck` 给出同一模块的
+  stuttering 行为，并证明它不是弱公平的、且永不达目标
+  （`liveness_needs_fairness`）。把"没有公平性就没有活性"写成定理，比在文档里
+  声明更有说服力，也避免把公平性当成技术细节。
+* **全正确性 = 偏正确性 + 终止性**：`Hoare.loop`（偏正确性）与
+  `loop_can_exit`（存在终止运行）拼起来就是 `countTo3_total`；这条拼装关系
+  验证了 proof 层与 liveness 层的接口设计。
+* **`LeadsTo` 的量化顺序很关键**：`eventually_zero_of_weakFair` 的结论先做成
+  `∀ n, ∃ N ≥ n, …`，再包装成 `LeadsTo`；否则只能得到"从时刻 0 出发"的弱形式。
+* **状态型公平 vs 关系型公平**：库里的"taken"定义为
+  `rel A (b n) (b (n+1))`（该步满足 `A` 的关系），因此对 `A <|> B`
+  的模块，"`A` 一直可用但环境始终走 `B`"正好是弱公平被违反的情形——
+  这也是 `stuck` 能被否证的原因。
+
+### 11.5 结论
 
 * 表达能力上，顺序、非确定（`<|>` / `nondet` / `choiceAll`）、守卫、循环、聚焦
   （`focus`/`focusView`）、精化（含 stuttering）、交错并行、构造性可达性，都能在
