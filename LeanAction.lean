@@ -5,3 +5,4 @@ import LeanAction.Lens
 import LeanAction.Proof
 import LeanAction.Tactic
 import LeanAction.Liveness
+import LeanAction.Frame

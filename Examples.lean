@@ -7,3 +7,4 @@ import Examples.Machine
 import Examples.Liveness
 import Examples.MutexLiveness
 import Examples.ParallelLiveness
+import Examples.Frame

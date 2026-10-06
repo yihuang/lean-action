@@ -156,6 +156,7 @@ variable {σ α β : Type u}
 /-- Forget the lens laws. -/
 def ofLens (l : Lens σ α) : View σ α := ⟨l.get, l.set⟩
 
+
 /-- Compose views (nested fields). The setter re-reads the outer field, which is
 what makes `get ∘ set` behave like a nested update. -/
 def comp (v₁ : View σ α) (v₂ : View α β) : View σ β where

@@ -33,6 +33,7 @@ LeanAction/Proof.lean    证明层：Reach、Preserves、Hoare、Module、Refine
 LeanAction/Tactic.lean   自动化：action_simp、step、inv_induct、safe_induct
 LeanAction/Liveness.lean 时序层：Always / Eventually / LeadsTo、行为、公平性、秩论证
 LeanAction/Derive.lean   元编程：view_defs / lens_defs 命令（结构字段的 View/Lens 生成）
+LeanAction/Frame.lean    共享状态组合：Disjoint（框架条件）、框架定理、ViewModule.parallel
 Examples/                计数器、嵌套结构、while、交错并行、精化
 ```
 
@@ -262,6 +263,55 @@ def Refines (f : σ_c → σ_a) (Abs : Module σ_a) (Conc : Module σ_c) : Prop 
 
 ---
 
+### 5.4 共享状态：把框架条件显式化（`LeanAction/Frame.lean`）
+
+§5.2 的 `interleave` 只在**积状态**上组合，因为那里"两个分量互不干扰"这件事被
+*类型*硬化了：状态就是 `σ × τ`，一个分量的动作不可能碰到另一个。共享 record 上
+没有这种便利——进程 1 写 `pc1`、进程 2 写 `pc2`，但两者都可能写 `turn`。
+
+要重新拿到组合性，就必须把**框架条件（frame condition）**写成可证明的事实：
+
+```lean
+structure Disjoint (v₁ : View σ α) (v₂ : View σ β) : Prop where
+  get_set : ∀ s a, v₂.get (v₁.set s a) = v₂.get s     -- 写 v₁ 不影响读 v₂
+  set_get : ∀ s b, v₁.get (v₂.set s b) = v₁.get s
+  set_set : ∀ s a b, v₁.set (v₂.set s b) a = v₂.set (v₁.set s a) b   -- 同时执行用
+```
+
+为什么是**交换律**而不是"字段名不交"：在这个抽象层没有变量名，能说的就是
+"一个的效果对另一个不可见"。这一步是**证明义务**，不是约定（`Examples/Frame.lean`
+里用 `cases s; rfl` 关掉）。
+
+在它之上是本层的三条结果：
+
+* `Disjoint.get_of_rel`：聚焦动作不动另一个投影（框架条件最常用的形态）；
+* `Preserves.focusView`（只需 `get_set`，不需要完整 lens 定律）：**分量局部的不变式
+  提升到共享状态**；
+* `ViewModule.parallel_preserves`：**框架定理**——交错步保持不变式
+  `P ∘ v₁.get ∧ Q ∘ v₂.get`，其中 `P` 只由分量 1 负责、`Q` 只由分量 2 负责，
+  "另一半"由 `Disjoint` 自动传递（还有单边形式 `parallel_preserves_fst/snd`）。
+
+由此得到共享状态系统上的安全性与活性：
+
+```lean
+theorem parallel_safe   -- 分量不变式（各自在自己的状态类型上证明）⇒ 组合系统安全
+theorem parallel_leadsTo -- 分量活性 ⇒ 组合活性（配合 proj_step / weakFair_of_lift /
+                         --   forward_stable_of_preserves：投影会 stutter，所以要序列级秩定理）
+```
+
+**边界是定理，不是文档**：`Examples/Frame.lean` 证明 mutex 的两个进程
+**不**满足 `Disjoint`（两者都写 `turn`）：
+
+```lean
+theorem mutex_not_disjoint : ¬ Disjoint mutexP₁ mutexP₂
+```
+
+所以那个协议确实需要手写全局不变式（§11.5 的 `inv`），而下一步的自然方向是
+**rely/guarantee**（允许足迹相交，用 R/G 条件代替不交性）——见 §9.3。
+
+与 §5.2 的关系：积状态版是"框架条件被状态类型硬化"的特例，`disjoint_fst_snd`
+就是 `Lens.fst`/`Lens.snd` 的不交性证明。
+
 ## 6. 证明层：只有一个归纳引擎
 
 ```lean
@@ -414,8 +464,10 @@ compassion/公平性不变式、以及**区域自动合成**——目前区域�
 ### 9.3 其他
 
 * **Lens 派生**：`deriving` handler 或 `lens!` 宏（见 §5.1）。
-* **并行语义**：目前只有交错语义。真正的并行（同步/共享变量/分离逻辑）需要
-  额外的状态分解假设。
+* **并行语义**：交错语义有两层——积状态（`interleave`，§5.2）与共享状态 +
+  不交足迹（`Frame.lean`，§5.4）。仍缺：(a) **rely/guarantee**（足迹相交，如 mutex
+  的 `turn`）；(b) **同步/同时执行**的组合子（`Disjoint.set_set` 已经备好，但没有
+  `sync` 组合子）；(c) 足迹的自动化推断（目前 `Disjoint` 要手写或 `cases s; rfl`）。
 * **不变式合成**：现在需要人工给出 `inv`；`Module.safe_of_invariant` 的形状已经
   适合接入 IC3/Houdini 式的不变式猜测。
 * **`grind` 依赖**：`action_simp` 的兜底是 Lean core 的 `grind`；若某处不适用，
@@ -442,6 +494,7 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 | `Examples/Liveness` | 公平性下的必然性（计数器必达 3）、**不公平则活性失效**的显式定理（stuttering 行为）、safety→`Always` 的桥（含互斥协议的 `Always`）、`while` 终止性与循环全正确性 |
 | `Examples/MutexLiveness` | 共享内存协议的活性：区域内的 variant（非全局单调）、"进入临界区"与"离开临界区"两个方向；后者由安全性（互斥不变式）提供区域稳定性 |
 | `Examples/ParallelLiveness` | 交错并行的活性组合：分量活性（经投影 + 公平性传递 + 序列级秩论证）合成乘积活性，反面例子说明右分量公平假设不可省 |
+| `Examples/Frame` | 共享 record 上的不交足迹组合：框架条件作为证明义务、框架定理给出组合安全性（每半只在自己的状态类型上证）、组合活性、以及 `¬ Disjoint` 说明了 mutex 为何超出本层 |
 
 ---
 
@@ -606,7 +659,32 @@ lake build      # Lean v4.33.0，零依赖，17 个 job，无 warning
 * **反面例子**：`leftOnly`（只动左分量）是乘积的合法行为、甚至对左分量的提升动作
   弱公平，却永远达不到 `p.1 ≥ 3 ∧ p.2 ≥ 4`——右分量的公平假设确实不可省。
 
-### 11.8 结论
+### 11.8 框架条件显式化：经验
+
+* **`ViewModule` 只需要 `get_set`**，不需要完整 lens 定律：框架定理只用到
+  "写进视图再读回来"这一条，所以足迹比 `Lens` 更宽松（`View` + 一条定律）。
+  这降低了使用门槛：用户不必证 `set_get`/`set_set` 就能用组合定理。（我一开始
+  用 `Lens` 作足迹，后来发现不必要。）
+* **不要给 `Lens → View` 加 `Coe` 实例**：目标类型未知时 Lean 会**静默地不插入
+  coercion**，于是 `Disjoint M₁.view M₂.view` 报出的错是"`M₂.view` 是 `Lens` 但期望
+  `View ?m`"——很难从字面猜到根因。改成显式 `View.ofLens`（或让足迹类型本身就是
+  `View`）就干净了。
+* **`parallel` 不是语法上可交换的**：`M₁ ∥ M₂` 的 `next` 是 `lift₁ <|> lift₂`，
+  与 `lift₂ <|> lift₁` 只是逻辑等价。所以"把同一个泛型分量活性引理套到第二个分量
+  上"需要一条小引理 `isBehavior_parallel_swap`（或者 `Module` 层面的交换律）。
+  这类"语义对称、语法不对称"的地方，泛型引理的实例化总要额外交接一次。
+* **Lean 的 `rw` 只做语法匹配**，在这层撞了两次同一个坑：
+  1. beta-redex：目标写的是 `(fun s => P (v.get s)) s'`，`rw [h]` 找不到 `v.get s'`
+     → 先用 `change P (v.get s')` 打开；
+  2. 结构常量的投影：泛型引理给的是 `C₁.view.get`，而目标里已是 `fp₁.get`
+     → 用 `have h' : <显式类型的等式> := h`（`have` 走 defeq，`rw` 不走）。
+  最终我把示例里的活性引理写成对 `M.view` 泛型、实例化时传 `C₁`/`C₂`，就把第 2 类
+  摩擦集中到了一处。
+* **边界写成定理最有说服力**：`mutex_not_disjoint` 让"这个协议不能用框架组合"不再
+  是一句断言，而是一个一行的反例证明——这和上一轮 `liveness_needs_fairness` 是同一
+  个套路：把"做不到"形式化。
+
+### 11.9 结论
 
 * 表达能力上，顺序、非确定（`<|>` / `nondet` / `choiceAll`）、守卫、循环、聚焦
   （`focus`/`focusView`）、精化（含 stuttering）、交错并行、构造性可达性，都能在
