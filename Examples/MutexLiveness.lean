@@ -17,6 +17,11 @@ reached.
 This is also where the guard on `req1`/`req2` matters: without it a process could
 "re-request" from inside the critical section, which safety does not notice but
 which destroys the stability of the region.
+
+The enter direction is proved twice: once with the rank theorem
+(`eventually_enter1`/`leadsTo_enter1`) and once with the rank-free `WF1` rule
+(`leadsTo_enter1_wf1`). The leave direction genuinely needs the rank + safety
+pair, which is why the rank machinery stays.
 -/
 import LeanAction
 import Examples.Mutex
@@ -107,13 +112,10 @@ theorem eventually_enter1 (b : Behavior St) (hbeh : IsBehavior M b) (h0 : Region
       rw [rank_eq_zero_iff.mpr hpc, hs1]
       omega
     -- and it is enabled inside the region
-    have henabled : ∀ s, Region s → rank s > 0 → ∃ s', rel enter1 s s' := by
+    have henabled : ∀ s, Region s → rank s > 0 → Enabled enter1 s := by
       intro s hs _
-      refine ⟨{ s with pc1 := 2 }, ?_⟩
       simp only [Region] at hs
-      simp only [enter1]
-      action_simp
-      grind
+      simpa [enter1] using And.intro hs.1 hs.2.1
     obtain ⟨N, -, hz⟩ := eventually_zero_of_weakFair_inv (M := M) (A := enter1)
       (μ := rank) (I := Region) hbeh hI hdec hA henabled hfair 0
     exact absurd (rank_eq_zero_iff.mp hz) (hne N)
@@ -136,6 +138,52 @@ theorem leadsTo_enter1 (b : Behavior St) (hbeh : IsBehavior M b)
     exact ⟨M - n, by omega, by simpa [TakesStep, h1, h2] using hstep⟩
   obtain ⟨N, hN⟩ := eventually_enter1 (fun k => b (n + k)) hbeh' (by simpa using hn) hfair'
   exact ⟨n + N, Nat.le_add_right n N, hN⟩
+
+/-! ## The same `LeadsTo`, via the WF1 rule
+
+`leadsTo_of_wf1` needs no rank at all: three one-step obligations (progress,
+environment, enabledness) replace `eventually_zero_of_weakFair_inv`. Both routes
+prove the same conclusion; the rank route also carries the `μ`/region machinery
+that the *leave* direction below needs. -/
+
+/-- Progress: an `enter1` step from the region reaches the goal. -/
+theorem wf1_prog : ∀ (s s' : St), Region s → ¬ s.pc1 = 2 → rel enter1 s s' → s'.pc1 = 2 := by
+  intro s s' hs hq h
+  simp only [Region] at hs
+  simp only [enter1] at h
+  action_simp
+  grind
+
+/-- Environment: from the region, every module step either reaches the goal or
+stays in `Region ∧ ¬goal`. Reuses the two interface lemmas the R/G proof already
+had (`region_steps1`/`region_steps2`). -/
+theorem wf1_env : ∀ (s s' : St), Region s → ¬ s.pc1 = 2 → rel M.next s s' →
+    (Region s' ∧ ¬ s'.pc1 = 2) ∨ s'.pc1 = 2 := by
+  intro s s' hs _ h
+  have hbeh : rel (steps1 <|> steps2) s s' := by
+    simpa [M, next] using h
+  rw [rel_orElse] at hbeh
+  rcases hbeh with h1 | h2
+  · rcases region_steps1 hs h1 with hreg | hgoal
+    · exact Or.inl ⟨hreg, fun hc => by have h1' := hreg.1; omega⟩
+    · exact Or.inr hgoal
+  · have hreg := region_steps2 hs h2
+    exact Or.inl ⟨hreg, fun hc => by have h1' := hreg.1; omega⟩
+
+/-- Enabledness, now stated with `Enabled` and closed by the `enabled_*` simp
+set (the guard of `enter1` *is* the first two conjuncts of `Region`). -/
+theorem wf1_enabled : ∀ (s : St), Region s → ¬ s.pc1 = 2 → Enabled enter1 s := by
+  intro s hs _
+  simp only [Region] at hs
+  simpa [enter1] using And.intro hs.1 hs.2.1
+
+/-- **The WF1 route to mutex liveness.** Same conclusion as `leadsTo_enter1`, but
+the proof is three interface lemmas plus the rule — no rank, no prefix induction,
+no contradiction wrapper. -/
+theorem leadsTo_enter1_wf1 (b : Behavior St) (hbeh : IsBehavior M b)
+    (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b :=
+  leadsTo_of_wf1 (M := M) (A := enter1) (P := Region) (Q := fun s => s.pc1 = 2)
+    hbeh hfair wf1_prog wf1_env wf1_enabled
 
 /-! ## The complementary direction: leaving the critical section
 
@@ -187,13 +235,9 @@ theorem leadsTo_exit1 (b : Behavior St) (hbeh : IsBehavior M b)
       · exact absurd h hpc
       · simp [csRank, h]
     omega
-  have henabled : ∀ s, InCS s → csRank s > 0 → ∃ s', rel exit1 s s' := by
+  have henabled : ∀ s, InCS s → csRank s > 0 → Enabled exit1 s := by
     intro s hs _
-    refine ⟨{ s with pc1 := 0, turn := 2 }, ?_⟩
-    obtain ⟨hpc1, -⟩ := hs
-    simp only [exit1]
-    action_simp
-    grind
+    simpa [exit1] using hs.1
   refine (leadsTo_zero_of_weakFair_inv (M := M) (A := exit1) (μ := csRank) (I := InCS)
     hbeh hI hdec hA henabled hfair).mono (fun _ _ => trivial) ?_
   intro s hs

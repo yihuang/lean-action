@@ -192,4 +192,36 @@ theorem rel_viewOfLens {l : Lens σ α} {A : Action α} {s s' : σ} :
     rel (focusView (View.ofLens l) A) s s' ↔ rel (focus l A) s s' := by
   simp [rel_focus, View.ofLens]
 
+/-! ### Enabledness of lifted/focused actions
+
+Continuation of the `enabled_*` set from `LeanAction.Action`: focusing an
+action on a sub-state preserves enabledness exactly, pointwise. -/
+
+@[simp] theorem enabled_focusView {v : View σ α} {A : Action α} {s : σ} :
+    Enabled (focusView v A) s ↔ Enabled A (v.get s) := by
+  simp only [Enabled, rel_focusView]
+  constructor
+  · rintro ⟨s', a', h, -⟩
+    exact ⟨a', h⟩
+  · rintro ⟨a', h⟩
+    exact ⟨v.set s a', a', h, rfl⟩
+
+@[simp] theorem enabled_liftLeft {A : Action σ} {p : σ × α} :
+    Enabled (liftLeft A) p ↔ Enabled A p.1 := by
+  simp only [Enabled, rel_liftLeft]
+  constructor
+  · rintro ⟨q, h, -⟩
+    exact ⟨q.1, h⟩
+  · rintro ⟨s', h⟩
+    exact ⟨(s', p.2), h, rfl⟩
+
+@[simp] theorem enabled_liftRight {B : Action α} {p : σ × α} :
+    Enabled (liftRight B) p ↔ Enabled B p.2 := by
+  simp only [Enabled, rel_liftRight]
+  constructor
+  · rintro ⟨q, h, -⟩
+    exact ⟨q.2, h⟩
+  · rintro ⟨s', h⟩
+    exact ⟨(p.1, s'), h, rfl⟩
+
 end LeanAction

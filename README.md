@@ -83,20 +83,20 @@ Complete, compiling examples live in `Examples/`:
 
 | File | Contents |
 | --- | --- |
-| `Examples/Basic.lean` | `do` DSL, `<|>`, `while` loops, nested-field focus via `View.comp` |
+| `Examples/Basic.lean` | `do` DSL, `<|>`, `while` loops, nested-field focus via `View.comp`, and the deriver's pairwise `Disjoint` certificates closed by `disjoint_auto` |
 | `Examples/Parallel.lean` | `Module.interleave`, refinement (`Refines`) with stuttering |
 | `Examples/Mutex.lean` | shared-variable protocol: mutual exclusion from six process steps, constructive reachability, a proof that a process is blocked |
 | `Examples/Hoare.lean` | partial correctness: `iterate`, `while` (`Hoare.loop`), `nondet`, `focusView` |
 | `Examples/DataRefinement.lean` | non-identity abstraction map, safety transfer, implementation-only invariant, run lifting |
 | `Examples/Machine.lean` | stack machine with the program in the state: dispatch by `choiceAll`, safety for *every* program, a concrete run |
 | `Examples/Liveness.lean` | inevitability under fairness, a theorem that **liveness fails without fairness**, `Always`-form mutual exclusion, loop termination and total correctness |
-| `Examples/MutexLiveness.lean` | liveness of the shared-memory protocol: a region-restricted (not globally monotone) variant, both "enter" and "leave" directions, the latter using safety for region stability |
+| `Examples/MutexLiveness.lean` | liveness of the shared-memory protocol: a region-restricted (not globally monotone) variant, both "enter" and "leave" directions, the latter using safety for region stability; the enter direction is proved twice (rank argument and the rank-free `leadsTo_of_wf1`) |
 | `Examples/ParallelLiveness.lean` | liveness of an interleaving: projection + fairness transfer + sequence-level rank argument ⇒ product liveness; a counterexample shows the fairness hypothesis is needed |
-| `Examples/Frame.lean` | disjoint footprints on a shared record: frame theorem (each half proved on its own state type), composed liveness, synchronous composition, and `¬ Disjoint` explaining why the mutex protocol is outside this layer |
-| `Examples/RelyGuarantee.lean` | overlapping footprints composed by interfaces: each component answers only to its own rely/guarantee |
+| `Examples/Frame.lean` | disjoint footprints on a shared record: frame theorem (each half proved on its own state type), composed liveness, synchronous composition, nested/indexed footprints (`Disjoint.comp_of_disjoint`, `upd` + an `i ≠ j` side condition), conditional disjointness (`DisjointUnder` and aliasing freedom), and `¬ Disjoint` explaining why the mutex protocol is outside this layer |
+| `Examples/RelyGuarantee.lean` | overlapping footprints composed by interfaces: each component answers only to its own rely/guarantee, plus the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) that needs no explicit `Rel` |
 
 ```bash
-lake build          # builds the library and the examples (Lean v4.33.0)
+lake build          # library + examples + LeanActionTests (Lean v4.33.0)
 ```
 
 ---
@@ -172,9 +172,16 @@ LeanAction/Tactic.lean   action_simp / step / inv_induct / safe_induct
 LeanAction/Derive.lean   view_defs / lens_defs commands (needs `import Lean`)
 LeanAction/Liveness.lean Always / Eventually / LeadsTo, behaviors, fairness, rank arguments
 LeanAction/Frame.lean    shared-state composition: Disjoint, frame theorem, ViewModule.parallel
-Examples/                compiling examples
+Examples/                compiling examples (the API in use)
+Tests/                   LeanActionTests: compile-time regression tests for the library
 DESIGN.md                design document (semantics, automation, limits, roadmap)
 ```
+
+The `Tests/` modules are the project's unit tests. They are proofs, so
+*compiling them is running them*: `lake build` fails if any lemma that used to
+hold stops holding. They are deliberately thin — each one records a small
+obligation that a library change once broke (the two-channel `disjoint_auto`,
+`DisjointUnder`, WF1, `derivedRely`, …) and consume only the public API.
 
 ## Examples as experiments
 

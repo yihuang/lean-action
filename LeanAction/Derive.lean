@@ -63,6 +63,30 @@ private def structName? (env : Environment) (currNs : Name) (stx : Syntax) : Opt
     | none => #[]
   cands.find? fun c => (getStructureInfo? env c).isSome
 
+/-- Flatten a syntactic application `f a b …` into its head and the argument
+list, stripping parentheses. Returns `(stx, #[])` for a non-application. -/
+private partial def flatApp (stx : Syntax) : Syntax × Array Syntax :=
+  match stx with
+  | .node _ `Lean.Parser.Term.paren args =>
+      match args[1]? with
+      | some inner => flatApp inner
+      | none => (stx, #[])
+  | .node _ `Lean.Parser.Term.app args =>
+      match args[0]?, args[1]? with
+      | some fn, some argSeq =>
+          let (head, prev) := flatApp fn
+          (head, prev ++ argSeq.getArgs)
+      | _, _ => (stx, #[])
+  | _ => (stx, #[])
+
+/-- Number of leading *explicit* `forall` binders of a type. A generated view is
+a plain `View` unless the structure's parameters were declared with an explicit
+`variable` `(α : Type)`, in which case the view is a function and has to be
+applied to the type arguments. -/
+private def explicitArity : Expr → Nat
+  | .forallE _ _ body .default => 1 + explicitArity body
+  | _ => 0
+
 /-- The last component of a (possibly namespaced) field name. -/
 private def lastComp (n : Name) : String :=
   match n with
@@ -88,6 +112,17 @@ private def emitViewLikes (lens : Bool) (tyName : Name) (tyStr : String)
   let currNs ← getCurrNamespace
   let relTy :=
     if currNs == .anonymous then tyName else tyName.replacePrefix currNs .anonymous
+  -- The structure type as a *term*, used to ascribe the view references in the
+  -- certificate statements below. Without the ascription a reference like
+  -- `Box.payloadView` leaves the structure parameter as an unsolved implicit
+  -- (the theorem header is elaborated with no expected type), so the parameter
+  -- never enters the section-variable collection and the generated theorem is
+  -- ill-formed (`don't know how to synthesize implicit argument α`). Writing
+  -- `(Box.payloadView : View (Box α) _)` ties the parameter to the section
+  -- variable, which both infers the arguments and pulls `α` into the binders.
+  let tyTerm ← match Parser.runParserCategory env `term tyStr with
+    | .ok s => pure (⟨s⟩ : TSyntax `term)
+    | .error e => throwError "view_defs: cannot parse the type `{tyStr}` back as a term: {e}"
   for fldName in info.fieldNames do
     let fld := lastComp fldName
     let (getterStx, setterStx) ← match viewParts env tyStr fld with
@@ -103,6 +138,60 @@ private def emitViewLikes (lens : Bool) (tyName : Name) (tyStr : String)
       else
         `(def $declId $binders* := View.mk $getter $setter)
     elabCommand cmd
+  -- Certificate layer: one theorem per pair of distinct fields, e.g.
+  -- `T.disjoint_f_g : Disjoint T.fView T.gView`, closed by `cases s; rfl`
+  -- (deliberately *not* casing the values, which would split `Nat` into
+  -- `zero`/`succ` and get stuck). Sibling fields are syntactically disjoint,
+  -- so the disjointness check is done here, at generation time; the
+  -- `disjoint_auto` tactic only has to look the certificate up *by name*.
+  -- Idempotent across the `ViewFields`/`LensFields` pair of handlers via the
+  -- contains-check. NB: identifiers are built with `mkIdent` (scope-free) and
+  -- antiquoted; literals written inside the quotation get stamped with this
+  -- module's macro scopes and fail to resolve at the use site.
+  let env ← getEnv
+  if env.contains `LeanAction.Disjoint then
+    let fields := info.fieldNames
+    for i in [:fields.size] do
+      for j in [i+1:fields.size] do
+        let f := lastComp fields[i]!
+        let g := lastComp fields[j]!
+        let lemName := relTy.str s!"disjoint_{f}_{g}"
+        let env ← getEnv
+        if env.contains (currNs ++ lemName) then continue
+        let mkViewRef (fld : String) : CommandElabM (TSyntax `term) := do
+          let vName := relTy.str (fld ++ "View")
+          if (← getEnv).contains (currNs ++ vName) then
+            let vId := mkIdent vName
+            -- The generated view takes the structure's parameters as *explicit*
+            -- arguments when the user declared them with `variable (α : Type)`;
+            -- then the bare name is a function and has to be applied. Otherwise
+            -- the ascription alone pins the parameters and pulls them into the
+            -- theorem's binders.
+            let arity : Nat :=
+              match (← getEnv).find? (currNs ++ vName) with
+              | some ci => explicitArity ci.type
+              | none => 0
+            if arity == 0 then
+              `(($vId : $(mkIdent `LeanAction.View) $tyTerm _))
+            else
+              let (_, allArgs) := flatApp tyTerm.raw
+              if allArgs.size < arity then
+                throwError "view_defs: cannot reconstruct the type arguments of \
+                  `{tyName}` for the disjointness certificate; spell the full \
+                  application out (e.g. `view_defs (Foo α β)`)"
+              let args : Array (TSyntax `term) := (allArgs.extract 0 arity).map (⟨·⟩)
+              `(($vId $args* : $(mkIdent `LeanAction.View) $tyTerm _))
+          else
+            let vId := mkIdent (relTy.str (fld ++ "Lens"))
+            `(($(mkIdent `LeanAction.View.ofLens) $vId : $(mkIdent `LeanAction.View) $tyTerm _))
+        let fv ← mkViewRef f
+        let gv ← mkViewRef g
+        let cmd ← `(theorem $(mkIdent lemName) $binders* :
+            $(mkIdent `LeanAction.Disjoint) $fv $gv :=
+          ⟨by intro s a; cases s; rfl,
+             by intro s b; cases s; rfl,
+             by intro s a b; cases s; rfl⟩)
+        elabCommand cmd
 
 private def elabViewLike (lens : Bool) (ty : Term) : CommandElabM Unit := do
   let some tyStr := Syntax.reprint ty.raw

@@ -103,6 +103,14 @@ theorem wrap_lens_get_set (α : Type) (w : Wrap α) (v : α) :
     (Wrap.valLens α).get ((Wrap.valLens α).set w v) = v :=
   (Wrap.valLens α).get_set w v
 
+/-- The deriver also emits one `Disjoint` certificate per pair of sibling fields
+(`Outer.disjoint_inner_flag`), found by `disjoint_auto` by naming convention —
+the frame obligation needs no pointwise `cases` proof. -/
+example : Disjoint Outer.innerView Outer.flagView := by disjoint_auto
+
+/-- The reversed order resolves through the same certificate via `Disjoint.symm`. -/
+example : Disjoint Outer.flagView Outer.innerView := by disjoint_auto
+
 /-- Proof-free focus points: composition of `View`s selects `Outer.inner.n`. -/
 def outerN : View Outer Nat := View.comp Outer.innerView Inner.nView
 

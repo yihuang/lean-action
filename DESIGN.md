@@ -601,17 +601,17 @@ Examples that compile, and what they cover:
 
 | Example | Coverage |
 | --- | --- |
-| `Examples/Basic` | `do` DSL, `<|>`, the invariant `n = log.length`, `safe_induct`, `while` + `rel_loop`, nested-field focus via `View.comp` |
+| `Examples/Basic` | `do` DSL, `<|>`, the invariant `n = log.length`, `safe_induct`, `while` + `rel_loop`, nested-field focus via `View.comp`, and the deriver's pairwise `Disjoint` certificates discharged by `disjoint_auto` |
 | `Examples/Parallel` | `Module.interleave`, a sum invariant, `Refines` with stuttering |
 | `Examples/Mutex` | shared-variable protocol (turn-based mutual exclusion): `guard` + six process steps, an invariant mixing both processes, `safe_induct`/`safe_of_invariant`, constructive reachability, `not_rel_guard_seq` to prove "blocked" |
 | `Examples/Hoare` | partial correctness: `Hoare.iterate` (arithmetic post-condition), `Hoare.loop` (`while` + exit condition), `Hoare.nondet`, `Hoare.focusView` (focused triples) |
 | `Examples/DataRefinement` | non-identity abstraction map, safety transfer along refinement, an implementation-only invariant (`count = log.length`), `Refines.reach` lifting concrete runs |
 | `Examples/Machine` | stack machine with the program in the state: `choiceAll` dispatch, safety for **every** program (the code never grows), the concrete run `[push 2, push 3, add] → [5]` |
 | `Examples/Liveness` | inevitability under fairness (a counter must reach 3), an explicit theorem that **liveness fails without fairness** (a stuttering behavior), the safety→`Always` bridge (including `Always`-form mutual exclusion), `while` termination and loop total correctness |
-| `Examples/MutexLiveness` | liveness of the shared-memory protocol: a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant) |
+| `Examples/MutexLiveness` | liveness of the shared-memory protocol: a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant); the enter direction is also proved with the rank-free WF1 rule (`leadsTo_of_wf1`) |
 | `Examples/ParallelLiveness` | liveness composition for interleaving: component liveness (projection + fairness transfer + sequence-level rank argument) into product liveness, with a counterexample showing the fairness hypothesis for the right component cannot be dropped |
-| `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous composition (`sync`), and `¬ Disjoint` explaining why mutex is outside this layer |
-| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), `¬ Disjoint` showing why the frame layer cannot do it |
+| `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous composition (`sync`), nested footprints (`Disjoint.comp_of_disjoint`), indexed/array footprints (`upd`, conditional on `i ≠ j`), conditional disjointness (`DisjointUnder`, aliasing freedom), and `¬ Disjoint` explaining why mutex is outside this layer |
+| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) needing no explicit `Rel`, and `¬ Disjoint` showing why the frame layer cannot do it |
 
 ---
 

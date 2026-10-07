@@ -113,6 +113,15 @@ theorem eventually_of_leadsTo {P Q : Nondet σ} {b : Behavior σ} (h : LeadsTo P
   obtain ⟨m, -, hm⟩ := h 0 hP
   exact ⟨m, hm⟩
 
+/-- Case split: if both disjuncts lead to `R`, so does the disjunction. -/
+theorem LeadsTo.or {P Q R : Nondet σ} {b : Behavior σ}
+    (hP : LeadsTo P R b) (hQ : LeadsTo Q R b) :
+    LeadsTo (fun s => P s ∨ Q s) R b := by
+  intro n hn
+  rcases hn with hn | hn
+  · exact hP n hn
+  · exact hQ n hn
+
 /-! ## Safety as a temporal property -/
 
 /-- Every behavior of a module satisfies every preserved predicate at all times. -/
@@ -154,6 +163,48 @@ def StrongFair (A : Action σ) (b : Behavior σ) : Prop :=
 theorem StrongFair.toWeakFair {A : Action σ} {b : Behavior σ} (h : StrongFair A b) :
     WeakFair A b :=
   fun n hen => h n fun k => ⟨max k n, Nat.le_max_left _ _, hen _ (Nat.le_max_right _ _)⟩
+
+/-- Fairness stated through `Enabled`: the antecedent of `WeakFair` is
+literally "`Enabled A` holds at every time from `n` on". -/
+theorem weakFair_enabled {A : Action σ} {b : Behavior σ} :
+    WeakFair A b ↔
+    ∀ n, (∀ m, n ≤ m → Enabled A (b m)) → ∃ m, n ≤ m ∧ TakesStep A b m := Iff.rfl
+
+/-- **WF1.** If, from `P ∧ ¬Q`,
+* every step of `A` reaches `Q` (`hprog`),
+* every step of the module either reaches `Q` or keeps `P ∧ ¬Q` (`henv`),
+* `A` stays enabled (`henabled`),
+then weak fairness for `A` yields `LeadsTo P Q`.
+
+This is the TLA+ WF1 rule with the invariant specialized to `P ∧ ¬Q` (and no
+primed variables: `P s'`, `Q s'` play the primed roles). Unlike the rank
+theorems below it needs no measure at all; the three obligations are
+one-step facts that the `action_simp; grind` pipeline discharges. -/
+theorem leadsTo_of_wf1 {M : Module σ} {A : Action σ} {P Q : Nondet σ} {b : Behavior σ}
+    (hbeh : IsBehavior M b) (hfair : WeakFair A b)
+    (hprog : ∀ s s', P s → ¬ Q s → rel A s s' → Q s')
+    (henv : ∀ s s', P s → ¬ Q s → rel M.next s s' → (P s' ∧ ¬ Q s') ∨ Q s')
+    (henabled : ∀ s, P s → ¬ Q s → Enabled A s) :
+    LeadsTo P Q b := by
+  intro n hn
+  by_cases hgoal : ∃ m, n ≤ m ∧ Q (b m)
+  · obtain ⟨m, hnm, hm⟩ := hgoal
+    exact ⟨m, hnm, hm⟩
+  · have hno : ∀ m, n ≤ m → ¬ Q (b m) := fun m hnm hm => hgoal ⟨m, hnm, hm⟩
+    have hstable : ∀ m, n ≤ m → P (b m) ∧ ¬ Q (b m) := by
+      intro m hnm
+      induction hnm with
+      | refl => exact ⟨hn, hno _ (Nat.le_refl n)⟩
+      | step hnm ih =>
+          obtain ⟨hPm, hQm⟩ := ih
+          rcases henv _ _ hPm hQm (hbeh _) with h | h
+          · exact h
+          · exact absurd h (hno _ (Nat.le_succ_of_le hnm))
+    have hen : ∀ m, n ≤ m → Enabled A (b m) :=
+      fun m hm => henabled _ (hstable m hm).1 (hstable m hm).2
+    obtain ⟨m, hnm, htaken⟩ := hfair n hen
+    have hQ := hprog _ _ (hstable m hnm).1 (hstable m hnm).2 htaken
+    exact absurd hQ (hno _ (Nat.le_succ_of_le hnm))
 
 /-! ## Rank arguments -/
 

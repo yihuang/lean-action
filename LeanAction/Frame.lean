@@ -22,15 +22,17 @@ processes of the mutex protocol are **not** disjoint (they share `turn`), which 
 exactly why that example still needs a hand-written global invariant and why the
 next step up is rely/guarantee.
 -/
+import Lean
 import LeanAction.Lens
 import LeanAction.Proof
 import LeanAction.Liveness
+import LeanAction.Derive
 
 universe u
 
 namespace LeanAction
 
-open Nondet
+open Nondet Lean Elab Tactic
 
 variable {σ α β : Type u}
 
@@ -60,6 +62,236 @@ theorem disjoint_fst_snd :
   get_set := by intro p a; rfl
   set_get := by intro p b; rfl
   set_set := by intro p a b; rfl
+
+/-! ## Composing disjointness
+
+`Disjoint` is compositional: nested views reduce to base cases instead of
+one big pointwise proof. These three theorems use only the lens laws and
+`Disjoint` hypotheses. -/
+
+variable {γ : Type u}
+
+/-- Two views into the *same* component commute when the inner views do.
+Assumptions: the three lens laws for the outer lens and `Disjoint` for the
+inner views. -/
+theorem Disjoint.comp_of_disjoint (l : Lens σ α) {w₁ : View α β} {w₂ : View α γ}
+    (h : Disjoint w₁ w₂) :
+    Disjoint (View.ofLens l ∘ᵥ w₁) (View.ofLens l ∘ᵥ w₂) where
+  get_set s a := by
+    show w₂.get (l.get (l.set s (w₁.set (l.get s) a))) = w₂.get (l.get s)
+    rw [l.get_set]
+    exact h.get_set _ _
+  set_get s b := by
+    show w₁.get (l.get (l.set s (w₂.set (l.get s) b))) = w₁.get (l.get s)
+    rw [l.get_set]
+    exact h.set_get _ _
+  set_set s a b := by
+    show l.set (l.set s (w₂.set (l.get s) b)) (w₁.set (l.get (l.set s (w₂.set (l.get s) b))) a) =
+      l.set (l.set s (w₁.set (l.get s) a)) (w₂.set (l.get (l.set s (w₁.set (l.get s) a))) b)
+    rw [l.get_set, l.get_set, l.set_set, l.set_set]
+    exact congrArg (l.set s) (h.set_set _ _ _)
+
+/-- A view into a component of a disjoint pair stays disjoint from the other
+component. Only uses `Disjoint` hypotheses — no lens laws at all. -/
+theorem Disjoint.comp_left {v₁ : View σ α} {v₂ : View σ β} (h : Disjoint v₁ v₂)
+    (w : View α γ) :
+    Disjoint (v₁ ∘ᵥ w) v₂ where
+  get_set s a := by
+    show v₂.get (v₁.set s (w.set (v₁.get s) a)) = v₂.get s
+    exact h.get_set _ _
+  set_get s b := by
+    show w.get (v₁.get (v₂.set s b)) = w.get (v₁.get s)
+    rw [h.set_get]
+  set_set s a b := by
+    show v₁.set (v₂.set s b) (w.set (v₁.get (v₂.set s b)) a) =
+      v₂.set (v₁.set s (w.set (v₁.get s) a)) b
+    rw [h.set_get, h.set_set]
+
+/-- The symmetric version. -/
+theorem Disjoint.comp_right {v₁ : View σ α} {v₂ : View σ β} (h : Disjoint v₁ v₂)
+    (w : View β γ) :
+    Disjoint v₁ (v₂ ∘ᵥ w) :=
+  (h.symm.comp_left w).symm
+
+/-! ## Function-update (array-like) footprints
+
+The syntactic boundary of the pointwise (`cases; rfl`) disjointness fragment:
+`upd` with a *variable* index does not reduce, so array-like views need
+conditional lemmas with an `i ≠ j` side condition. -/
+
+/-- Function update. -/
+def upd [DecidableEq α] (f : α → β) (i : α) (v : β) : α → β :=
+  fun j => if j = i then v else f j
+
+theorem upd_same [DecidableEq α] (f : α → β) (i : α) (v : β) : upd f i v i = v :=
+  if_pos rfl
+
+theorem upd_noteq [DecidableEq α] {i j : α} (h : j ≠ i) (f : α → β) (v : β) :
+    upd f i v j = f j :=
+  if_neg h
+
+/-- Commutation of two updates at distinct indices: the lemma that makes
+array-like footprints work. -/
+theorem upd_comm [DecidableEq α] {i j : α} (h : i ≠ j) (f : α → β) (a b : β) :
+    upd (upd f i a) j b = upd (upd f j b) i a := by
+  funext k
+  show (if k = j then b else (if k = i then a else f k)) =
+    (if k = i then a else (if k = j then b else f k))
+  by_cases hki : k = i
+  · subst hki
+    rw [if_neg h, if_pos rfl, if_pos rfl]
+  · by_cases hkj : k = j
+    · subst hkj
+      rw [if_pos rfl, if_neg (Ne.symm h), if_pos rfl]
+    · rw [if_neg hkj, if_neg hki, if_neg hki, if_neg hkj]
+
+/-! ## Conditional disjointness: `DisjointUnder`
+
+The conditional frame ("if `i ≠ j`, writing `arr[i]` does not disturb
+`arr[j]`") is *one* abstraction that is simultaneously:
+
+* the footprint layer's conditional frame (`DisjointUnder` below);
+* the RG layer's rely special case (`get_eq_of_write`, `rely`);
+* the temporal layer's static shadow of a region (`get_const_of_steps`,
+  `get_const_of_behavior`).
+
+Flat-state frameworks neither have nor need this (footprint = variable
+name); the `View` semantics expresses it directly. The asymmetric `set_set`
+law — the condition guards only the `v₂`-intermediate — orients `v₂` as the
+"environment" side, which is exactly what makes composition (below) free of
+preservation side conditions. -/
+
+/-- Conditional disjointness: the three commutation laws are required to
+hold only at states satisfying `P`. `Disjoint` is the special case where
+`P` is trivially true. -/
+structure DisjointUnder (P : Nondet σ) (v₁ : View σ α) (v₂ : View σ β) : Prop where
+  get_set : ∀ s a, P s → v₂.get (v₁.set s a) = v₂.get s
+  set_get : ∀ s b, P s → v₁.get (v₂.set s b) = v₁.get s
+  set_set : ∀ s a b, P s → P (v₂.set s b) →
+    v₁.set (v₂.set s b) a = v₂.set (v₁.set s a) b
+
+/-- Plain disjointness implies conditional disjointness at any condition. -/
+theorem Disjoint.toUnder (h : Disjoint v₁ v₂) (P : Nondet σ) :
+    DisjointUnder P v₁ v₂ where
+  get_set s a _ := h.get_set s a
+  set_get s b _ := h.set_get s b
+  set_set s a b _ _ := h.set_set s a b
+
+/-- At the trivial condition this is exactly `Disjoint`: the conditional
+notion is a *conservative extension*, not a competing one. -/
+theorem disjointUnder_top (v₁ : View σ α) (v₂ : View σ β) :
+    DisjointUnder (fun _ : σ => True) v₁ v₂ ↔ Disjoint v₁ v₂ :=
+  ⟨fun h => ⟨fun s a => h.get_set s a True.intro, fun s b => h.set_get s b True.intro,
+      fun s a b => h.set_set s a b True.intro True.intro⟩,
+   fun h => h.toUnder _⟩
+
+/-- Monotonicity: if commutation holds at every `Q`-state and `P s` implies
+`Q s`, then it holds at every `P`-state. -/
+theorem DisjointUnder.mono {P Q : Nondet σ} (hPQ : ∀ s, P s → Q s)
+    (h : DisjointUnder Q v₁ v₂) : DisjointUnder P v₁ v₂ where
+  get_set s a hp := h.get_set s a (hPQ s hp)
+  set_get s b hp := h.set_get s b (hPQ s hp)
+  set_set s a b hp hp' := h.set_set s a b (hPQ s hp) (hPQ _ hp')
+
+/-- The rely reading, pointwise: an environment step that keeps `P` and
+writes only within `v₂`'s footprint (i.e. the step is fully determined by
+its `v₂`-view) leaves `v₁`'s view unchanged. -/
+theorem DisjointUnder.get_eq_of_write {P : Nondet σ} {v₁ : View σ α} {v₂ : View σ β}
+    (h : DisjointUnder P v₁ v₂) {s s' : σ} (hp : P s)
+    (hwrite : s' = v₂.set s (v₂.get s')) : v₁.get s' = v₁.get s :=
+  calc v₁.get s' = v₁.get (v₂.set s (v₂.get s')) := congrArg v₁.get hwrite
+    _ = v₁.get s := h.set_get s (v₂.get s') hp
+
+/-- Packaged as a rely relation: if every `R`-step preserves `P` and stays
+inside `v₂`'s footprint, then `R` is a valid rely for any component reading
+`v₁`. -/
+theorem DisjointUnder.rely {P : Nondet σ} {v₁ : View σ α} {v₂ : View σ β}
+    (h : DisjointUnder P v₁ v₂) {R : Rel σ σ}
+    (hR : ∀ s s', R s s' → P s → P s' ∧ s' = v₂.set s (v₂.get s'))
+    {s s' : σ} (hr : R s s') (hp : P s) : v₁.get s' = v₁.get s := by
+  obtain ⟨_, hwrite⟩ := hR s s' hr hp
+  exact h.get_eq_of_write hp hwrite
+
+/-- Along any behavior whose states all satisfy `P` and whose every step
+writes only within `v₂`'s footprint, `v₁`'s view is constant. -/
+theorem DisjointUnder.get_const_of_steps {P : Nondet σ} {v₁ : View σ α} {v₂ : View σ β}
+    (h : DisjointUnder P v₁ v₂) {b : Behavior σ}
+    (hP : ∀ n, P (b n)) (hstep : ∀ n, ∃ v, b (n + 1) = v₂.set (b n) v) :
+    ∀ n, v₁.get (b n) = v₁.get (b 0) := by
+  intro n
+  induction n with
+  | zero => rfl
+  | succ m ih =>
+      obtain ⟨v, hv⟩ := hstep m
+      calc v₁.get (b (m + 1)) = v₁.get (v₂.set (b m) v) := congrArg v₁.get hv
+        _ = v₁.get (b m) := h.set_get (b m) v (hP m)
+        _ = v₁.get (b 0) := ih
+
+/-- Packaged over a module: if every `M`-step preserves `P` and writes only
+within `v₂`'s footprint, then along any behavior of `M` the `v₁`-view is
+frozen. -/
+theorem DisjointUnder.get_const_of_behavior {P : Nondet σ} {v₁ : View σ α} {v₂ : View σ β}
+    (h : DisjointUnder P v₁ v₂) {M : Module σ} {b : Behavior σ}
+    (hbeh : IsBehavior M b) (hP : ∀ n, P (b n))
+    (hnext : ∀ s s', rel M.next s s' → P s → P s' ∧ s' = v₂.set s (v₂.get s')) :
+    ∀ n, v₁.get (b n) = v₁.get (b 0) := by
+  apply h.get_const_of_steps hP
+  intro n
+  obtain ⟨_, hwrite⟩ := hnext (b n) (b (n + 1)) (hbeh n) (hP n)
+  exact ⟨_, hwrite⟩
+
+/-- Through a lens: the condition pulls back along `l.get`. -/
+theorem DisjointUnder.comp_of_disjoint (l : Lens σ α) {Q : Nondet α}
+    {w₁ : View α β} {w₂ : View α γ} (h : DisjointUnder Q w₁ w₂) :
+    DisjointUnder (fun s => Q (l.get s)) (View.ofLens l ∘ᵥ w₁) (View.ofLens l ∘ᵥ w₂) where
+  get_set s a hp := by
+    show w₂.get (l.get (l.set s (w₁.set (l.get s) a))) = w₂.get (l.get s)
+    rw [l.get_set]
+    exact h.get_set _ _ hp
+  set_get s b hp := by
+    show w₁.get (l.get (l.set s (w₂.set (l.get s) b))) = w₁.get (l.get s)
+    rw [l.get_set]
+    exact h.set_get _ _ hp
+  set_set s a b hp hp' := by
+    show l.set (l.set s (w₂.set (l.get s) b))
+        (w₁.set (l.get (l.set s (w₂.set (l.get s) b))) a) =
+      l.set (l.set s (w₁.set (l.get s) a))
+        (w₂.set (l.get (l.set s (w₁.set (l.get s) a))) b)
+    rw [l.get_set, l.get_set, l.set_set, l.set_set]
+    change Q (l.get (l.set s (w₂.set (l.get s) b))) at hp'
+    rw [l.get_set] at hp'
+    exact congrArg (l.set s) (h.set_set _ _ _ hp hp')
+
+/-- Nested view against a sibling, under `P`. The asymmetric `set_set`
+condition lands exactly on the nested view's intermediate state, so no
+preservation side condition is needed. -/
+theorem DisjointUnder.comp_left {P : Nondet σ} {v₁ : View σ α} {v₂ : View σ β}
+    (h : DisjointUnder P v₁ v₂) (w : View α γ) :
+    DisjointUnder P (v₁ ∘ᵥ w) v₂ where
+  get_set s a hp := h.get_set s (w.set (v₁.get s) a) hp
+  set_get s b hp := by
+    show w.get (v₁.get (v₂.set s b)) = w.get (v₁.get s)
+    rw [h.set_get s b hp]
+  set_set s a b hp hp' := by
+    show v₁.set (v₂.set s b) (w.set (v₁.get (v₂.set s b)) a) =
+      v₂.set (v₁.set s (w.set (v₁.get s) a)) b
+    rw [h.set_get s b hp, h.set_set s _ _ hp hp']
+
+/-- Symmetric version: nesting a view on the *environment* side asks even
+less, since the environment's intermediate condition is the one `set_set`
+already guards. -/
+theorem DisjointUnder.comp_right {P : Nondet σ} {v₁ : View σ α} {v₂ : View σ β}
+    (h : DisjointUnder P v₁ v₂) (w : View β γ) :
+    DisjointUnder P v₁ (v₂ ∘ᵥ w) where
+  get_set s a hp := by
+    show w.get (v₂.get (v₁.set s a)) = w.get (v₂.get s)
+    rw [h.get_set s a hp]
+  set_get s b hp := h.set_get s (w.set (v₂.get s) b) hp
+  set_set s a b hp hp' := by
+    show v₁.set (v₂.set s (w.set (v₂.get s) b)) a =
+      v₂.set (v₁.set s a) (w.set (v₂.get (v₁.set s a)) b)
+    rw [h.get_set s a hp]
+    exact h.set_set s a (w.set (v₂.get s) b) hp hp'
 
 /-! ## Frame lemmas -/
 
@@ -296,6 +528,27 @@ theorem Preserves.orElse_of_compatible {A₁ A₂ : Action σ} {I : Nondet σ} {
   · exact h₂ s s' hs (hc.left s s' hs h)
   · exact h₁ s s' hs (hc.right s s' hs h)
 
+/-- The derived rely for the safety fragment: environment steps preserve the
+invariant. Packaging as a relation — not a new concept. -/
+def derivedRely (I : Nondet σ) : Rel σ σ := fun s s' => I s → I s'
+
+/-- **Rely as output.** Given each component's guarantee lemma (stated in its
+own vocabulary, locally checkable), `Compatible` with the derived relies is
+definitional and the composition is immediate: no explicit `Rel` parameter
+appears at the call site. The user chooses exactly what they already choose —
+`I` and the guarantees; trial-and-error over `R₁ R₂` is eliminated, not
+automated. The explicit `Rel` parameter remains available for the residual
+tier: value-constraint interfaces (e.g. `s'.v ≤ s.v`) that are not of the
+shape `I s → I s'` for any single-predicate `I`. -/
+theorem preserves_of_guarantees {σ : Type u} {I : Nondet σ} {A₁ A₂ : Action σ}
+    (g₁ : ∀ s s', I s → rel A₁ s s' → I s')
+    (g₂ : ∀ s s', I s → rel A₂ s s' → I s') :
+    Preserves (A₁ <|> A₂) I :=
+  Preserves.orElse_of_compatible
+    (R₁ := derivedRely I) (R₂ := derivedRely I)
+    ⟨fun s s' hi h => fun _ => g₁ s s' hi h, fun s s' hi h => fun _ => g₂ s s' hi h⟩
+    (fun _ _ hi hr => hr hi) (fun _ _ hi hr => hr hi)
+
 /-- **Prefix stability, relying on the environment.** `I` holds until `G` is
 reached: the component's own steps keep `I` or reach `G`, and the environment's
 steps keep `I` (its rely, i.e. `A₂ ⊆ (I → I)` here). This is the temporal
@@ -394,13 +647,59 @@ end ViewModule
 
 /-! ## Proving disjointness for structure views
 
-Views for structure fields are definitionally pointwise, so their disjointness is
-`cases` plus `rfl`. -/
+Views for structure fields are definitionally pointwise, so their disjointness
+is `cases` plus `rfl`. But `disjoint_auto` has **two channels**:
 
-/-- Prove a `Disjoint` goal for views written as structure updates. -/
-macro "disjoint_auto" : tactic =>
-  `(tactic| (refine ⟨?_, ?_, ?_⟩ <;>
+1. **Certificate lookup**: `deriving ViewFields/LensFields` (and `view_defs` /
+   `lens_defs`) emit one `@[field_disjoint]` theorem per pair of distinct
+   fields at generation time; this channel is a pure lookup combined with
+   `Disjoint.symm`. It covers the flat-structure fragment — everything a
+   flat-state framework (Veil/IVy) can cover — fully automatically, including
+   `Nat`-valued fields where the old search used to get stuck.
+2. **Semantic fallback**: `cases; rfl`, first *without* casing the values
+   (casing a `Nat` value splits it into `zero`/`succ` and the `succ` branch
+   does not close), then with casing (needed for pair-valued views).
+
+Neither channel sees function-update (`upd`) footprints: those are
+*conditional* and need `upd_noteq`/`upd_comm` or `DisjointUnder`, by design. -/
+
+/-- The certificate theorem name for two *sibling field views* `T.fView`,
+`T.gView`: `T.disjoint_f_g`. Returns `none` unless both views are head
+constants under the same structure prefix ending in `View`. -/
+private def fieldDisjointCert? (n₁ n₂ : Name) : Option Name := do
+  let .str t f₁ := n₁ | none
+  let .str t' g₁ := n₂ | none
+  let some f := (f₁.dropSuffix? "View") | none
+  let some g := (g₁.dropSuffix? "View") | none
+  if t == t' then some (t.str s!"disjoint_{f}_{g}") else none
+
+/-- Prove a `Disjoint` goal: certificate lookup first (per-field-pair theorems
+generated by the view/lens derivers, found *by naming convention*), then the
+`cases; rfl` fallback. -/
+elab "disjoint_auto" : tactic => do
+  let g ← getMainGoal
+  let ty ← g.getType
+  let env ← getEnv
+  if ty.isAppOfArity ``Disjoint 5 then
+    let v₁ := ty.appFn!.appArg!
+    let v₂ := ty.appArg!
+    let heads := (v₁.getAppFn, v₂.getAppFn)
+    if let (.const n₁ _, .const n₂ _) := heads then
+      for cert in [fieldDisjointCert? n₁ n₂, fieldDisjointCert? n₂ n₁] do
+        if let some c := cert then
+          if env.contains c then
+            for e in [mkConst c, mkApp (mkConst ``Disjoint.symm) (mkConst c)] do
+              try
+                let gs ← g.apply e
+                if gs.isEmpty then
+                  replaceMainGoal []
+                  return
+              catch _ => pure ()
+  -- semantic fallback: `cases; rfl`, first without casing the values
+  evalTactic (← `(tactic| refine ⟨?_, ?_, ?_⟩ <;>
     first
+      | (intro s a b; try cases s; rfl)
+      | (intro s a; try cases s; rfl)
       | (intro s a b; try cases s; try cases a; try cases b; rfl)
       | (intro s a; try cases s; try cases a; rfl)))
 

@@ -42,8 +42,8 @@ theorem incr_decreases {s s' : Nat} (hs : μ s > 0) (h : rel incr s s') : μ s' 
   simp only [μ] at hs ⊢
   omega
 
-theorem incr_enabled {s : Nat} (_hs : μ s > 0) : ∃ s', rel incr s s' :=
-  ⟨s + 1, by simp only [incr, rel_update]⟩
+theorem incr_enabled {s : Nat} (_hs : μ s > 0) : Enabled incr s := by
+  simp [incr]
 
 theorem next_nonincreasing : ∀ s s' : Nat, rel M.next s s' → μ s' ≤ μ s := by
   intro s s' h
