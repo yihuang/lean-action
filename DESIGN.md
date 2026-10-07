@@ -188,6 +188,13 @@ to reduce any composite action to a first-order statement about states, and to
 terminate while doing so. That is the foundation of all the automation; there is no
 custom rewrite engine anywhere else.
 
+One lemma sits just outside the `rel_*` set because it is a *case split* rather
+than an unfolding: `rel_choiceAll_split` (`[DecidableEq ι]`) says
+`rel (choiceAll f) s s'` is `rel (f i) s s'` or `rel (choiceAll (fun j : {j // j ≠ i} => f j)) s s'`.
+It is what makes an `n`-ary choice usable by the **binary** rely/guarantee rules
+(`relyGuarantee_until`, `preserves_of_guarantees`, `Compatible`), and
+`action_simp` consumes its `∃`/`∨` shape through `exists_or`.
+
 ---
 
 ## 5. Modularity
@@ -468,7 +475,7 @@ been unfolded", or "`grind` cannot derive this arithmetic fact").
 
 | Macro | Purpose |
 | --- | --- |
-| `action_simp` | `simp (config := {failIfUnchanged := false}) only [rel_*, ActionM.*_apply, Prod.mk.injEq, ...] at *`; unfold action semantics to first order |
+| `action_simp` | `simp (config := {failIfUnchanged := false}) only [rel_*, ActionM.*_apply, Prod.mk.injEq, exists_and_left, exists_eq_left, exists_eq, exists_or, and_assoc, upd_fun, ...] at *`; unfold the action semantics to first order **and normalize** the result (collapse the `∃ t, (P s ∧ t = s) ∧ Q t` shape, push the `choiceAll`/`<|>` witness disjunction out, unfold `upd` at the function level) |
 | `step` | `action_simp; try grind`: one step obligation |
 | `inv_induct` | `unfold Preserves; intro s hs s' hstep; step`: the canonical `Preserves` skeleton |
 | `safe_induct` | `apply Module.safe_of_preserves`, leaving the two goals `init ⊆ P` and `Preserves next P` |
@@ -757,12 +764,25 @@ descends through the two projections" (`reach_interleave_fst/snd`).
    mutex to `n` nodes (`pc : Fin n → Pc`, `turn : Fin n`) made the program-counter
    update *indexed*, i.e. `upd s.pc i v`. `simp only [upd]` does **not** unfold it:
    `upd.eq_def` is stated on the fully applied form (`upd f i v j`), so it misses the
-   function-valued occurrence inside `s' = { s with pc := upd … }`. The working
-   pattern is `unfold setPc release upd at *` (delta-unfolding rewrites bare
-   occurrences too) followed by `simp_all [upd.eq_1]`, with a final `grind` for the
-   constructor case analysis; `grind` alone does not relate `s'.pc i` to the
-   structure literal. Bonus: making `pc` an **inductive** type (`out`/`wait`/`cs`)
-   deletes the `pc_bounds` invariant entirely — "the pc is in range" is now `cases`.
+   function-valued occurrence inside `s' = { s with pc := upd … }`. The first cut
+   needed a manual recipe at every obligation (`unfold setPc release upd at *` +
+   `simp_all [upd.eq_1]`), which is user knowledge in this document rather than in
+   the tactic — exactly the wrong place for it. Both halves are now *in* the tactic:
+   `upd_fun` (a function-level equation for `upd`, in `LeanAction/Lens.lean`) is part
+   of `action_simp`'s simp set, and `action_simp` also collapses the
+   `∃ t, (P s ∧ t = s) ∧ …` shape and pushes the `choiceAll` witness disjunction
+   out, so `inv_step` is back to `action_simp; grind` (see §7.2). The remaining
+   boundary is the users' *named* update helpers (`setPc s i v := { s with pc := upd … }`):
+   `action_simp` does not unfold user `def`s, so either list them in the preceding
+   `simp only` or write the update inline. Making them ambient would want a persisted
+   registry (`@[actionUnfold]`) consulted by the tactic — the same mechanism as
+   `@[field_disjoint]`/`disjoint_auto`; this package is Std-only and has no custom
+   `simp`-set registry to hang it on. Bonus: making `pc` an **inductive** type
+   (`out`/`wait`/`cs`) deletes the `pc_bounds` invariant entirely — "the pc is in
+   range" is now `cases` — and it also removes the *environment's* bound obligation:
+   the old region bounded the partner with `pc2 ≤ 1` (a `Nat` fact needing the
+   protocol argument), while `∀ j ≠ i, pc j ≠ cs` is closed by the constructor
+   disjointness alone.
 
 ### 11.4 Extra lessons from the liveness layer
 
@@ -996,7 +1016,13 @@ difference:
   plus a hand-written prefix induction"; with R/G it becomes two one-sided interface
   lemmas (`region_steps_own i` is node `i`'s own guarantee, `region_steps_others i`
   is the environment's rely, the latter never mentioning `steps i`) plus the
-  library's `relyGuarantee_until` doing the induction. By contrast the mutex's **safety**
+  library's `relyGuarantee_until` doing the induction. The node case split itself is
+  `rel_choiceAll_split` (§4.4), which is also what keeps the *binary* rules
+  applicable to the `Fin n` system. A related win of the inductive `pc`: the old
+  region bounded the partner with `pc2 ≤ 1` (a `Nat` fact whose proof needed the
+  protocol argument, `region_steps2`), whereas `∀ j ≠ i, pc j ≠ cs` is closed by
+  constructor disjointness — so the *environment's* bound obligation disappeared
+  together with `pc_bounds`. By contrast the mutex's **safety**
   (`inv_step`) is not shorter with R/G — see the next point.
 * **For state invariants, R/G buys modularity, not brevity.** I tried to redo a
   "shared cell × two components" safety example and the conclusion was clear: if some

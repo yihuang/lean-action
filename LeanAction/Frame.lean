@@ -115,35 +115,12 @@ theorem Disjoint.comp_right {v₁ : View σ α} {v₂ : View σ β} (h : Disjoin
 
 /-! ## Function-update (array-like) footprints
 
-The syntactic boundary of the pointwise (`cases; rfl`) disjointness fragment:
+The helper `upd` (and `upd_same`/`upd_noteq`/`upd_comm`/`upd_fun`) lives in
+`LeanAction/Lens.lean`, next to the `View` helpers: `action_simp` unfolds array
+updates with `upd_fun`, so the definition must precede the tactic layer. The
+syntactic boundary of the pointwise (`cases; rfl`) disjointness fragment is that
 `upd` with a *variable* index does not reduce, so array-like views need
 conditional lemmas with an `i ≠ j` side condition. -/
-
-/-- Function update. -/
-def upd [DecidableEq α] (f : α → β) (i : α) (v : β) : α → β :=
-  fun j => if j = i then v else f j
-
-theorem upd_same [DecidableEq α] (f : α → β) (i : α) (v : β) : upd f i v i = v :=
-  if_pos rfl
-
-theorem upd_noteq [DecidableEq α] {i j : α} (h : j ≠ i) (f : α → β) (v : β) :
-    upd f i v j = f j :=
-  if_neg h
-
-/-- Commutation of two updates at distinct indices: the lemma that makes
-array-like footprints work. -/
-theorem upd_comm [DecidableEq α] {i j : α} (h : i ≠ j) (f : α → β) (a b : β) :
-    upd (upd f i a) j b = upd (upd f j b) i a := by
-  funext k
-  show (if k = j then b else (if k = i then a else f k)) =
-    (if k = i then a else (if k = j then b else f k))
-  by_cases hki : k = i
-  · subst hki
-    rw [if_neg h, if_pos rfl, if_pos rfl]
-  · by_cases hkj : k = j
-    · subst hkj
-      rw [if_pos rfl, if_neg (Ne.symm h), if_pos rfl]
-    · rw [if_neg hkj, if_neg hki, if_neg hki, if_neg hkj]
 
 /-! ## Conditional disjointness: `DisjointUnder`
 

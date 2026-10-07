@@ -27,28 +27,21 @@ open LeanAction
 
 namespace Tests.Relies
 
-open Examples.Mutex (Pc St M next req enter exit steps setPc release)
+open Examples.Mutex (Pc St M next req enter exit steps setPc)
 open Examples.MutexLiveness (Region others)
 
 /-! ## Frame-relies: preservation of non-written fields -/
 
 /-- A step of node `j` writes only `pc j` and `turn`; hence, for `i ≠ j`, it
-preserves `pc i`. One `action_simp; …` — no manual cases. -/
+preserves `pc i`. One `action_simp` + close — no manual cases. -/
 theorem steps_preserves_other_pc {n : Nat} {i j : Fin n} (h : i ≠ j) {s s' : St n}
     (hstep : rel (steps j) s s') : s'.pc i = s.pc i := by
   simp only [steps, req, enter, exit] at hstep
   action_simp
-  rcases hstep with hstep | hstep | hstep
-  all_goals
-    rcases hstep with ⟨t, ⟨hp, ht⟩, hs'⟩
-    subst t
-    subst s'
-    simp_all [setPc, release, upd.eq_1]
-    try grind
+  grind
 
 /-- The candidate frame-rely for node `i`, as a relation. -/
 def R_frame {n : Nat} (i : Fin n) : Rel (St n) (St n) := fun s s' => s'.pc i = s.pc i
-
 /-- Checking a single node step `j ≠ i` against `R_frame i` is literally the
 generated lemma above. Note the shape is *generated*: unfold the partner,
 `action_simp`, close — one lemma per view outside the partner's write set. -/
@@ -69,7 +62,6 @@ theorem region_env_via_frame {n : Nat} {i j : Fin n} (h : j ≠ i) {s s' : St n}
   exact Examples.MutexLiveness.region_steps_others i hs (by
     simp only [others, rel_choiceAll]
     exact ⟨⟨j, h⟩, hstep⟩)
-
 /-! ## The constraint-rely shape (from Examples/RelyGuarantee) -/
 
 /- For comparison: in the Cell example the two components have the *same*

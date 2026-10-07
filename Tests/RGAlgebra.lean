@@ -22,7 +22,7 @@ open LeanAction
 
 namespace Tests.RGAlgebra
 
-open Examples.Mutex (Pc St M next inv req enter exit steps setPc release)
+open Examples.Mutex (Pc St M next inv req enter exit steps setPc)
 open Examples.MutexLiveness (others rel_next_iff)
 
 /-- Node `i`'s own steps preserve the invariant. -/
@@ -31,14 +31,7 @@ theorem steps_guarantee {n : Nat} (i : Fin n) :
   intro s s' hi h
   simp only [steps, req, enter, exit, inv] at hi h ⊢
   action_simp
-  rcases h with h | h | h
-  all_goals
-    rcases h with ⟨t, ⟨hp, ht⟩, hs'⟩
-    subst t
-    subst s'
-    intro k hk
-    simp_all [setPc, release, upd.eq_1]
-    try grind
+  grind
 
 /-- A step of every node other than `i` preserves the invariant too. -/
 theorem others_guarantee {n : Nat} (i : Fin n) :
@@ -49,14 +42,7 @@ theorem others_guarantee {n : Nat} (i : Fin n) :
   obtain ⟨⟨j, hji⟩, hj⟩ := h
   simp only [steps, req, enter, exit] at hj
   action_simp
-  rcases hj with h | h | h
-  all_goals
-    rcases h with ⟨t, ⟨hp, ht⟩, hs'⟩
-    subst t
-    subst s'
-    intro k hk
-    simp_all [setPc, release, upd.eq_1]
-    try grind
+  grind
 
 /-- Mutex safety, recomposed *without* writing any rely: the two guarantee
 lemmas above are both the obligations and the interfaces. Compare with

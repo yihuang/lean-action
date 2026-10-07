@@ -107,7 +107,7 @@ theorem step_increments {t t' : Nat × List Nat} (h : rel step t t') : t'.1 = t.
   grind
 
 theorem step_enabled (t : Nat × List Nat) : ∃ q, rel step t q :=
-  ⟨(t.1 + 1, t.1 :: t.2), by simp only [step]; action_simp; grind⟩
+  ⟨(t.1 + 1, t.1 :: t.2), by simp only [step]; action_simp <;> grind⟩
 
 /-- Liveness of one component of the composition, at target `k`: it only uses the
 component's *own* increment/enabledness facts and fairness for its lifted action,

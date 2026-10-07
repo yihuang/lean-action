@@ -306,6 +306,25 @@ theorem rel_bind_action {A : Action σ} {f : Done → Action σ} {s s' : σ} :
 @[simp] theorem rel_choiceAll {B : α → Action σ} {s s' : σ} :
     rel (choiceAll B) s s' ↔ ∃ a, rel (B a) s s' := Iff.rfl
 
+/-- **Binary split of `choiceAll`.** A step of `choiceAll f` is a step of `f i`, or
+a step of `choiceAll` over the indices other than `i`. This is the bridge that
+lets the binary rely/guarantee rules (`relyGuarantee_until`,
+`preserves_of_guarantees`, `Compatible`) apply to an `n`-ary choice: take the
+component's own action as `f i` and the environment as the subtype choice. -/
+theorem rel_choiceAll_split {ι : Type u} [DecidableEq ι] {f : ι → Action σ} {i : ι}
+    {s s' : σ} :
+    rel (choiceAll f) s s' ↔
+      rel (f i) s s' ∨ rel (choiceAll (fun j : {j : ι // j ≠ i} => f j.1)) s s' := by
+  simp only [rel_choiceAll]
+  constructor
+  · rintro ⟨j, hj⟩
+    by_cases h : j = i
+    · subst h; exact Or.inl hj
+    · exact Or.inr ⟨⟨j, h⟩, hj⟩
+  · rintro (h | ⟨⟨j, _⟩, hj⟩)
+    · exact ⟨i, h⟩
+    · exact ⟨j, hj⟩
+
 @[simp] theorem rel_iterate_zero {A : Action σ} {s s' : σ} :
     rel (iterate A 0) s s' ↔ s' = s := by
   simp [iterate]

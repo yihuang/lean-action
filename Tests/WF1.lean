@@ -25,8 +25,8 @@ Compare with `Examples/MutexLiveness.lean`: `eventually_enter` needed a rank, a
 region bookkeeping, and a separate `LeadsTo` repackaging step. Here the `LeadsTo`
 form comes out directly from the three obligations. -/
 
-open Examples.Mutex (Pc St M next req enter exit steps setPc release)
-open Examples.MutexLiveness (Region others rel_next_iff)
+open Examples.Mutex (Pc St M next req enter exit steps setPc)
+open Examples.MutexLiveness (Region others)
 
 /-- Progress: an `enter i` step from the region reaches the goal. -/
 theorem wf1_prog {n : Nat} (i : Fin n) :
@@ -35,21 +35,20 @@ theorem wf1_prog {n : Nat} (i : Fin n) :
   simp only [Region] at hs
   simp only [enter] at h
   action_simp
-  simp_all [setPc, upd.eq_1]
+  simp_all
 
 /-- Environment: from the region, every module step either reaches the goal or
-stays in `Region i ∧ ¬goal`. Reuses the two interface lemmas the R/G example
-already had. -/
+stays in `Region i ∧ ¬goal`. Proved in place (the file is a regression test for
+WF1 on the mutex, so it does not borrow the example's region lemmas): with
+`action_simp` collapsing the `choiceAll` witness, the node case split
+(`a = i` vs. `a ≠ i`) is what `grind` does. -/
 theorem wf1_env {n : Nat} (i : Fin n) :
     ∀ s s', Region i s → ¬ s.pc i = Pc.cs → rel (next (n := n)) s s' →
       (Region i s' ∧ ¬ s'.pc i = Pc.cs) ∨ s'.pc i = Pc.cs := by
   intro s s' hs _ h
-  rcases (rel_next_iff i).mp h with h | h
-  · rcases Examples.MutexLiveness.region_steps_own i hs h with hreg | hgoal
-    · exact Or.inl ⟨hreg, fun hc => by simp only [Region] at hreg; grind⟩
-    · exact Or.inr hgoal
-  · have hreg := Examples.MutexLiveness.region_steps_others i hs h
-    exact Or.inl ⟨hreg, fun hc => by simp only [Region] at hreg; grind⟩
+  simp only [next, steps, req, enter, exit, Region] at hs h ⊢
+  action_simp
+  grind
 
 /-- Enabledness: inside the region, `enter i` is enabled (its guard is `Region
 i`'s first two conjuncts). -/

@@ -224,4 +224,44 @@ action on a sub-state preserves enabledness exactly, pointwise. -/
   · rintro ⟨s', h⟩
     exact ⟨(p.1, s'), h, rfl⟩
 
+/-! ## Function update (array-like fields)
+
+A helper for `View`s whose getter is a function `α → β` (arrays). `upd` writes a
+single index. Note that `upd.eq_def` is stated on the *fully applied* form
+(`upd f i v j`), so it does not see the bare function value that appears inside
+a structure update such as `{ s with arr := upd s.arr i v }`. `upd_fun` is the
+function-level equation that `action_simp` rewrites with. -/
+
+/-- Function update. -/
+def upd [DecidableEq α] (f : α → β) (i : α) (v : β) : α → β :=
+  fun j => if j = i then v else f j
+
+/-- Function-level unfolding of `upd`: unlike `upd.eq_def`, this rewrites the
+bare function value, which is what `simp`/`action_simp` sees inside a structure
+update. -/
+theorem upd_fun [DecidableEq α] (f : α → β) (i : α) (v : β) :
+    upd f i v = fun j => if j = i then v else f j := rfl
+
+theorem upd_same [DecidableEq α] (f : α → β) (i : α) (v : β) : upd f i v i = v :=
+  if_pos rfl
+
+theorem upd_noteq [DecidableEq α] {i j : α} (h : j ≠ i) (f : α → β) (v : β) :
+    upd f i v j = f j :=
+  if_neg h
+
+/-- Commutation of two updates at distinct indices: the lemma that makes
+array-like footprints work. -/
+theorem upd_comm [DecidableEq α] {i j : α} (h : i ≠ j) (f : α → β) (a b : β) :
+    upd (upd f i a) j b = upd (upd f j b) i a := by
+  funext k
+  show (if k = j then b else (if k = i then a else f k)) =
+    (if k = i then a else (if k = j then b else f k))
+  by_cases hki : k = i
+  · subst hki
+    rw [if_neg h, if_pos rfl, if_pos rfl]
+  · by_cases hkj : k = j
+    · subst hkj
+      rw [if_pos rfl, if_neg (Ne.symm h), if_pos rfl]
+    · rw [if_neg hkj, if_neg hki, if_neg hki, if_neg hkj]
+
 end LeanAction

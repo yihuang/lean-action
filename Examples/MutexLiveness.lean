@@ -30,7 +30,7 @@ open LeanAction
 
 namespace Examples.MutexLiveness
 
-open Examples.Mutex (Pc St M next init inv inv_step inv_init req enter exit steps setPc release)
+open Examples.Mutex (Pc St M next init inv inv_step inv_init req enter exit steps setPc)
 
 /-! ## The environment interface: own steps vs. the other nodes -/
 
@@ -38,18 +38,11 @@ open Examples.Mutex (Pc St M next init inv inv_step inv_init req enter exit step
 def others {n : Nat} (i : Fin n) : Action (St n) :=
   choiceAll (fun j : {j : Fin n // j ≠ i} => steps j.1)
 
-/-- `next` splits into node `i`'s own step and the environment's steps. -/
+/-- `next` splits into node `i`'s own step and the environment's steps. This is
+`rel_choiceAll_split` specialized to the mutex (`others i` is the subtype choice). -/
 theorem rel_next_iff {n : Nat} (i : Fin n) {s s' : St n} :
-    rel (next (n := n)) s s' ↔ rel (steps i) s s' ∨ rel (others i) s s' := by
-  simp only [next, others, rel_choiceAll]
-  constructor
-  · rintro ⟨j, hj⟩
-    by_cases hji : j = i
-    · subst hji; exact Or.inl hj
-    · exact Or.inr ⟨⟨j, hji⟩, hj⟩
-  · rintro (h | ⟨⟨j, _⟩, hj⟩)
-    · exact ⟨i, h⟩
-    · exact ⟨j, hj⟩
+    rel (next (n := n)) s s' ↔ rel (steps i) s s' ∨ rel (others i) s s' :=
+  rel_choiceAll_split (f := fun j => steps j) (i := i)
 
 /-- **The region**: node `i` is waiting, holds the token, and no *other* node is
 in the critical section. -/
@@ -63,7 +56,7 @@ theorem region_steps_own {n : Nat} (i : Fin n) {s s' : St n}
     Region i s' ∨ s'.pc i = Pc.cs := by
   simp only [steps, req, enter, exit, Region] at hs h ⊢
   action_simp
-  simp_all [setPc, upd.eq_1]
+  simp_all
 
 /-- The **environment interface** node `i` is allowed to assume: a step of any
 other node never leaves the region. This is the rely/guarantee obligation for the
@@ -75,13 +68,7 @@ theorem region_steps_others {n : Nat} (i : Fin n) {s s' : St n}
   obtain ⟨⟨j, hji⟩, hj⟩ := h
   simp only [steps, req, enter, exit] at hj
   action_simp
-  rcases hj with h | h | h
-  all_goals
-    rcases h with ⟨t, ⟨hp, ht⟩, hs'⟩
-    subst t
-    subst s'
-    simp_all [setPc, upd.eq_1]
-    try grind
+  grind
 
 /-- As long as node `i` has not entered the critical section, it stays in the
 region. The six-way case analysis of the `Nat` version is replaced by the two
@@ -108,7 +95,7 @@ theorem wf1_prog {n : Nat} (i : Fin n) :
   simp only [Region] at hs
   simp only [enter] at h
   action_simp
-  simp_all [setPc, upd.eq_1]
+  simp_all
 
 /-- Environment: from the region, every module step either reaches the goal or
 stays in `Region i ∧ ¬goal`. Reuses the two interface lemmas. -/
@@ -238,10 +225,7 @@ theorem leadsTo_exit {n : Nat} (i : Fin n) (b : Behavior (St n))
     have hpc : s'.pc i = Pc.out := by
       simp only [exit] at hstep
       action_simp
-      obtain ⟨t, ⟨hp, ht⟩, hs'⟩ := hstep
-      subst t
-      subst s'
-      simp [release, upd.eq_1]
+      simp_all
     have hs' : csRank i s' = 0 := by
       unfold csRank; rw [hpc]; rfl
     omega

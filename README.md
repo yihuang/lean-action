@@ -154,7 +154,7 @@ lake build          # library + examples + LeanActionTests (Lean v4.33.0)
 
 | Macro | Purpose |
 | --- | --- |
-| `action_simp` | unfold action semantics (`rel_*` lemma set, `at *`) |
+| `action_simp` | unfold action semantics (`rel_*` lemma set, `at *`) **and normalize**: collapse `∃ t, (P s ∧ t = s) ∧ Q t`, push the `choiceAll`/`<|>` witness disjunction out, unfold `upd` at the function level (`upd_fun`) |
 | `step` | `action_simp; try grind`, one step obligation |
 | `inv_induct` | the canonical skeleton for `Preserves A I` |
 | `safe_induct` / `safe_induct using I` | prove `M.Safe P` (optionally with an auxiliary invariant) |

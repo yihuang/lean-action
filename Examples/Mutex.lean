@@ -21,10 +21,10 @@ a single value, two nodes in the critical section would both have to equal it,
 which pins them to the same index.
 
 The system is still *one* `Module` over *one* record (the token is shared), as in
-the two-process version; what changes is that the automation now has to reason
-about `upd` at a variable index — which is exactly the boundary `DESIGN.md` §11.9
-documents for array-like footprints.
--/
+the two-process version; what changes is that the state is an *array* of program
+counters, so the actions write `upd s.pc i v`. Because `upd_fun` is part of
+`action_simp`'s simp set and the `choiceAll` witness is case-split by the
+normalization there, the obligations stay `action_simp; grind` (see `inv_step`). -/
 import LeanAction
 
 open LeanAction
@@ -52,28 +52,27 @@ itself supplies the proof `0 < n`, so no `NeZero` side condition is needed. -/
 def nxt {n : Nat} (i : Fin n) : Fin n :=
   ⟨(i.val + 1) % n, Nat.mod_lt _ (Nat.lt_of_le_of_lt (Nat.zero_le i.val) i.isLt)⟩
 
-/-- Write node `i`'s program counter. -/
+/-- Write node `i`'s program counter. Used to *name* states (`waiting`,
+`critical`, `queued`); the actions below write the update inline so that
+`action_simp` (which unfolds `upd` via `upd_fun`) sees the array update. -/
 def setPc {n : Nat} (s : St n) (i : Fin n) (v : Pc) : St n :=
   { s with pc := upd s.pc i v }
-
-/-- Leaving the critical section: back to `out`, and hand the token to the
-successor. -/
-def release {n : Nat} (s : St n) (i : Fin n) : St n :=
-  { s with pc := upd s.pc i Pc.out, turn := nxt i }
 
 /-- Node `i` asks for the token. The guard keeps a node inside the critical
 section from "re-requesting", which safety would not notice but which destroys
 the stability of the liveness region (see `Examples/MutexLiveness`). -/
 def req {n : Nat} (i : Fin n) : Action (St n) :=
-  guard (fun s => s.pc i = Pc.out) ;; update (fun s => setPc s i Pc.wait)
+  guard (fun s => s.pc i = Pc.out) ;; update (fun s => { s with pc := upd s.pc i Pc.wait })
 
 /-- Node `i` enters the critical section when it holds the token. -/
 def enter {n : Nat} (i : Fin n) : Action (St n) :=
-  guard (fun s => s.pc i = Pc.wait ∧ s.turn = i) ;; update (fun s => setPc s i Pc.cs)
+  guard (fun s => s.pc i = Pc.wait ∧ s.turn = i) ;;
+    update (fun s => { s with pc := upd s.pc i Pc.cs })
 
-/-- Node `i` leaves the critical section and passes the token on. -/
+/-- Node `i` leaves the critical section and hands the token to its successor. -/
 def exit {n : Nat} (i : Fin n) : Action (St n) :=
-  guard (fun s => s.pc i = Pc.cs) ;; update (fun s => release s i)
+  guard (fun s => s.pc i = Pc.cs) ;;
+    update (fun s => { s with pc := upd s.pc i Pc.out, turn := nxt i })
 
 /-- Node `i`'s own steps. -/
 def steps {n : Nat} (i : Fin n) : Action (St n) := req i <|> enter i <|> exit i
@@ -103,29 +102,18 @@ def Mutex {n : Nat} (s : St n) : Prop :=
 
 /-! ## Safety -/
 
-/-- The invariant is inductive: the `enter` step is justified by its guard, the
-`exit` step by the fact that it clears node `i`'s pc, and every other node's
-step by `i ≠ j`. Note how the *statement* is the same `∀ i, pc i = cs → turn = i`
-as for two processes; only the case analysis is now over `Fin n` (and over the
-`if` of the array update at a variable index). -/
+/-- The invariant is inductive. With `action_simp` now consuming the `choiceAll`
+witness, unfolding the array update (`upd_fun`) and collapsing the
+`∃ t, (P s ∧ t = s) ∧ …` shape of `guard ;; update`, the whole obligation is one
+`action_simp; grind` — the same shape as the two-process version. The `exit`
+branch's new token value `nxt a` is never needed: the `exit` guard plus the old
+invariant already force the moved node to be the one in the critical section. -/
 theorem inv_step {n : Nat} : Preserves (next (n := n)) (inv (n := n)) := by
   unfold Preserves
   intro s hs s' hstep
   simp only [next, steps, req, enter, exit, inv] at *
   action_simp
-  -- Three branches: `req a`, `enter a`, `exit a` for some node `a`. In each one
-  -- the equation `s' = …` is substituted and the array update is expanded to an
-  -- `if` at the variable index; `grind` then does the `a = k` case analysis.
-  -- (The `exit` branch's new token value `nxt a` is never needed: the `exit` guard
-  -- plus the old invariant already force `a = k`.)
-  rcases hstep with ⟨a, h | h | h⟩
-  all_goals
-    rcases h with ⟨t, ⟨hp, ht⟩, hs'⟩
-    subst t
-    subst s'
-    intro k hk
-    simp_all [setPc, release, upd.eq_1]
-    grind
+  grind
 
 theorem inv_init {n : Nat} : (init (n := n)) ⊆ₙ inv (n := n) := by
   intro s hs
@@ -166,15 +154,11 @@ state in which node `i` is in the critical section. -/
 theorem can_enter {n : Nat} (i : Fin n) :
     Reach (next (n := n)) (start i) (setPc (waiting i) i Pc.cs) := by
   have h1 : rel (req i) (start i) (waiting i) := by
-    simp only [req]
-    action_simp
-    exact ⟨start i, ⟨⟨rfl, rfl⟩, rfl⟩⟩
+    simp only [req, waiting, start, setPc]
+    action_simp <;> grind
   have h2 : rel (enter i) (waiting i) (setPc (waiting i) i Pc.cs) := by
-    simp only [enter]
-    action_simp
-    refine ⟨waiting i, ⟨⟨?_, ?_⟩, rfl⟩⟩
-    · unfold waiting start setPc upd; simp
-    · unfold waiting start setPc upd; simp
+    simp only [enter, waiting, start, setPc]
+    action_simp <;> grind
   have hs1 : rel (steps i) (start i) (waiting i) := by
     simp only [steps, rel_orElse]
     grind
