@@ -137,7 +137,8 @@ lake build          # library + examples + LeanActionTests (Lean v4.33.0)
 | `leadsTo_zero_of_weakFair(_inv)` | rank argument: inevitability under fairness (`_inv` only requires its hypotheses inside an invariant region) |
 | `loop_can_exit` | a `while` loop has a terminating run (with `Hoare.loop`: total correctness) |
 | `eventually_zero_of_strongFair_inv` | the strong-fairness version of the rank argument (`StrongFair ⟹ WeakFair`) |
-| `eventually_zero_of_seq` | sequence-level rank argument (stuttering allowed — needed for projected behaviors) |
+| `eventually_zero_of_seq` | sequence-level rank argument (stuttering allowed — needed for projected behaviors); the `Nat`/`μ > 0`-conditioned form of `wf_progress_false` |
+| `leadsTo_of_rank_region` / `leadsTo_of_rank_wf` | the fused rank rule on an explicit relation `r`, and on the registered `WFTrans` order (the `Nat`/`<` case) |
 | `interleave_leadsTo` | liveness composition for interleaving (with `forward_stable_of_preserves`, `weakFair_fst/snd_of_weakFair`) |
 | `deriving ViewFields, LensFields` | generates `Struct.fView` / `Struct.fLens` per field (absolute names, works inside namespaces) |
 | `view_defs` / `lens_defs` | generate `View` / `Lens` with the type given as a term (the path for parameterized structures) |
@@ -205,7 +206,9 @@ variables being outside `interleave`, …) are written up in
   shared-memory protocols) **and a rank-free WF1 rule** (`leadsTo_of_wf1`, at an
   arbitrary step relation, with a non-stuttering `⟨A⟩` variant), fused by
   `leadsTo_of_rank_region` (WF1's stepwise stability + a well-founded rank
-  `μ : σ → W`, no call-site `by_cases`), plus basic `LeadsTo` algebra. There is no
+  `μ : σ → W`, no call-site `by_cases`; `leadsTo_of_rank_wf` is the same rule on a
+  registered `WFTrans` order, so the `Nat` case passes no order facts), plus basic
+  `LeadsTo` algebra. There is no
   fixpoint calculus and no compassion, and invariant regions still have to be
   supplied by hand (`DESIGN.md` §9.2, §11.4, §11.5).
 * Parallelism has four composition modes (interleaving over product or shared

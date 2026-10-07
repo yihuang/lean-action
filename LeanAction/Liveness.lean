@@ -368,7 +368,12 @@ that the theorem applies to *projections* of product behaviors: projecting an
 interleaving onto one component yields a sequence in which the other component's
 steps appear as stuttering steps, and it is not a behavior of the component
 module. This is the engine that the module-level versions below are derived
-from. -/
+from.
+
+This is the `Nat` counterpart of `wf_progress_false` (`r := (· < ·)`), with
+every hypothesis conditioned on `μ > 0` rather than assumed globally; the
+sequence-level statement is what stays applicable after a projection, so it is
+kept rather than reduced to the module-level form. -/
 theorem eventually_zero_of_seq {μ : σ → Nat} {b : Behavior σ} {A : Action σ} {I : Nondet σ}
     (hI : ∀ n, μ (b n) > 0 → I (b n))
     (hdec : ∀ n, I (b n) → μ (b n) > 0 → μ (b (n + 1)) ≤ μ (b n))
@@ -497,7 +502,13 @@ split once, replacing the global invariant by the **stepwise** stability of
 the `=`-or-strictly-below sense) in a transitive well-founded order, which
 strictly decreases (`hprog`) at a step that weak fairness guarantees (`hfair`,
 with `A` always enabled), is impossible. This is the `by_cases`-free engine of
-`leadsTo_of_rank_region` below. -/
+`leadsTo_of_rank_region` below.
+
+The `Nat` sequence engines (`eventually_zero_of_seq` and the module-level
+theorems derived from it) are the same argument at `r := (· < ·)` with the
+hypotheses only required while `μ > 0`; they are stated at the sequence level
+because projections of product behaviors are sequence-indexed and not behaviors
+of the component module. -/
 theorem wf_progress_false {W : Type} {r : W → W → Prop} (hwf : WellFounded r)
     (htrans : ∀ ⦃a b c : W⦄, r a b → r b c → r a c)
     {μ : σ → W} {A : Action σ} {b : Behavior σ}
@@ -595,6 +606,35 @@ theorem leadsTo_of_rank_region {T A : Action σ} {P Q I : Nondet σ} {W : Type}
     have hen' : ∀ k, Enabled A (b' k) := fun k => henab _ (hI' k) (hstable' k).2
     have hfair' : WeakFair A b' := by simpa [b'] using weakFair_add hfair n
     exact (wf_progress_false hwf htrans hdec' hfair' hen' hprog').elim
+
+/-- A `<` order that is **well-founded and transitive** — exactly the two order
+facts `leadsTo_of_rank_region` takes as separate arguments. Register a new rank
+order by providing an `LT` instance and a `WFTrans` instance; `Nat` is the
+built-in case, and future rank types (lexicographic products, subtypes, …) only
+need an instance here. -/
+class WFTrans (α : Type u) [LT α] : Prop where
+  wf : WellFounded (· < · : α → α → Prop)
+  trans : ∀ ⦃a b c : α⦄, a < b → b < c → a < c
+
+instance : WFTrans Nat where
+  wf := Nat.lt_wfRel.wf
+  trans := fun _ _ _ => Nat.lt_trans
+
+/-- **`leadsTo_of_rank_region` on the registered order.** The common case: the
+rank is valued in a type carrying a `WFTrans` instance (`Nat` out of the box), so
+the call site no longer passes the well-foundedness/transitivity pair. The
+general rule keeps its explicit `r` for orders that are not registered. -/
+theorem leadsTo_of_rank_wf {T A : Action σ} {P Q I : Nondet σ}
+    {W : Type} [LT W] [WFTrans W] {μ : σ → W} {b : Behavior σ}
+    (hbeh : ∀ n, rel T (b n) (b (n + 1))) (hfair : WeakFair A b)
+    (hstab : ∀ s s', P s → ¬ Q s → rel T s s' → (P s' ∧ ¬ Q s') ∨ Q s')
+    (hreg : ∀ s, P s → ¬ Q s → I s)
+    (hdec : ∀ s s', I s → ¬ Q s → rel T s s' → μ s' = μ s ∨ μ s' < μ s)
+    (hprog : ∀ s, I s → ¬ Q s → ∀ s', rel A s s' → μ s' < μ s)
+    (henab : ∀ s, I s → ¬ Q s → Enabled A s) :
+    LeadsTo P Q b :=
+  leadsTo_of_rank_region (r := (· < ·)) WFTrans.wf WFTrans.trans
+    hbeh hfair hstab hreg hdec hprog henab
 
 /-! ## Compositionality for interleaving
 

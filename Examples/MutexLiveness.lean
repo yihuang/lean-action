@@ -17,7 +17,8 @@ As before:
   non-increasing — leaving the critical section sends it back up — so the
   region-restricted rule is needed;
 * the `enter` direction is proved twice: with the fused rank rule
-  `leadsTo_of_rank_region` and with the rank-free `leadsTo_of_wf1`, sharing the
+  `leadsTo_of_rank_wf`/`leadsTo_of_rank_region` and with the rank-free
+  `leadsTo_of_wf1`, sharing the
   same three one-step interface lemmas;
 * the `leave` direction consumes safety (`Mutex.inv`), and the `guarded` `req`
   is what makes the region stable.
@@ -147,14 +148,14 @@ theorem rank_pos_iff {n : Nat} {i : Fin n} {s : St n} :
   unfold rank; split <;> simp_all
 
 /-- **Liveness, rank route.** A direct instance of the library's fused rule
-`leadsTo_of_rank_region`: the *stepwise* stability `wf1_env` is shared with the
+`leadsTo_of_rank_wf` (the `Nat`/`<` case of `leadsTo_of_rank_region`): the
+*stepwise* stability `wf1_env` is shared with the
 WF1 route below, and the `by_cases`/prefix bookkeeping is discharged once inside
 the rule. -/
 theorem leadsTo_enter {n : Nat} (i : Fin n) (b : Behavior (St n))
     (hbeh : IsBehavior (M n) b) (hfair : WeakFair (enter i) b) :
     LeadsTo (Region i) (fun s => s.pc i = Pc.cs) b :=
-  leadsTo_of_rank_region (T := next (n := n)) (A := enter i) (r := (· < ·))
-    Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)
+  leadsTo_of_rank_wf (T := next (n := n)) (A := enter i)
     (P := Region i) (Q := fun s => s.pc i = Pc.cs) (I := Region i) (μ := rank i)
     hbeh hfair (wf1_env i)
     (hreg := fun s hs _ => hs)

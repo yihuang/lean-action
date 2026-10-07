@@ -197,7 +197,7 @@ theorem two_sync_safe : (C₁.syncModule C₂).Safe
 /-! ### Liveness of the lock-step composition
 
 Unlike the interleaving, `sync`'s step relation *is* the joint relation, so no
-projection/stutter argument is needed: `leadsTo_of_rank_region` applies with
+projection/stutter argument is needed: `leadsTo_of_rank_wf` applies with
 `T := C₁.sync C₂` directly. -/
 
 /-- Distance to the joint target `(n₁ ≥ 3, n₂ ≥ 4)`. -/
@@ -216,8 +216,7 @@ composition" roadmap item with an example rather than a new rule. -/
 theorem two_sync_live (b : Behavior Two) (hbeh : IsBehavior (C₁.syncModule C₂) b)
     (hfair : WeakFair (C₁.sync C₂) b) :
     LeadsTo (fun _ : Two => True) (fun s => s.n₁ ≥ 3 ∧ s.n₂ ≥ 4) b :=
-  leadsTo_of_rank_region (T := C₁.sync C₂) (A := C₁.sync C₂) (r := (· < ·))
-    Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)
+  leadsTo_of_rank_wf (T := C₁.sync C₂) (A := C₁.sync C₂)
     (P := fun _ => True) (Q := fun s => s.n₁ ≥ 3 ∧ s.n₂ ≥ 4)
     (I := fun _ => True) (μ := syncRank) hbeh hfair
     (by intro s s' _ _ _; simp only [true_and]; omega)

@@ -22,7 +22,7 @@ a *prefix* property ("this region holds until the goal is reached"), which is wh
 `relyGuarantee_until` is for and what `Examples/MutexLiveness.region_until_goal`
 now uses.
 
-The file closes the loop on *liveness* too: `leadsTo_of_rank_region` with the
+The file closes the loop on *liveness* too: `leadsTo_of_rank_wf` with the
 environment rely `s'.v ≤ s.v` makes the counter reach zero (`eventually_zero`). -/
 import LeanAction
 
@@ -136,7 +136,7 @@ theorem next_preserves_direct : Preserves next I := by
 
 /-! ## Liveness: the environment rely bounds the variant
 
-`leadsTo_of_rank_region` is the liveness counterpart of the rely/guarantee
+`leadsTo_of_rank_wf` is the liveness counterpart of the rely/guarantee
 composition. Here the progress action `tick` decrements the counter and the
 *environment* may do anything that does not increase it — concretely `env`
 decrements or stutters, the rely `s'.v ≤ s.v`. The `hstab`/`hdec` obligations are
@@ -166,8 +166,7 @@ theorem eventually_zero_opaque (E : Action Cell) (b : Behavior Cell)
     (hrely : ∀ s s', rel E s s' → s'.v ≤ s.v)
     (hbeh : ∀ n, rel (tick <|> E) (b n) (b (n + 1)))
     (hfair : WeakFair tick b) : LeadsTo (fun _ => True) (fun s => s.v = 0) b :=
-  leadsTo_of_rank_region (T := tick <|> E) (A := tick) (r := (· < ·))
-    Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)
+  leadsTo_of_rank_wf (T := tick <|> E) (A := tick)
     (P := fun _ => True) (Q := fun s => s.v = 0) (I := fun _ => True)
     (μ := fun s => s.v) hbeh hfair
     (by intro s s' _ _ _; simp only [true_and]; omega)

@@ -561,7 +561,12 @@ Implemented (`LeanAction/Liveness.lean`), in two layers:
   variants only require their hypotheses **inside an invariant region `I`**, and
   only while `μ > 0` — variants for shared-memory protocols are usually **not
   globally monotone** (leaving the critical section sends the variant back up), and
-  this relaxation is a prerequisite for such proofs.
+  this relaxation is a prerequisite for such proofs. This `Nat` family is the
+  same argument as `wf_progress_false` below at `r := (· < ·)`, with the two
+  hypotheses conditioned on `μ > 0` instead of assumed globally; it is stated at
+  the **sequence** level (a projection of a product behavior is not a behavior of
+  the component module), which is why it is kept as its own engine rather than
+  derived from the module-level one.
 * **leads-to algebra and WF1**: `LeadsTo.refl`/`mono`/`trans`/`or`/`cancel`, the
 time-shift lemmas (`isBehavior_add`/`weakFair_add`, `LeadsTo.of_shift`) that
 remove the "shift the behavior, transfer fairness" boilerplate from every
@@ -577,7 +582,11 @@ argument: it replaces the global invariant `hI : ∀ n, μ (b n) > 0 → I (b n)
 `by_cases`/prefix induction **once** in the library — so the rank route and the
 WF1 route now have the same call-site shape. The rank is general (`μ : σ → W`
 for a transitive well-founded `r`, with `wf_progress_false` the sequence-level
-engine), not `Nat`-specific.
+engine), not `Nat`-specific; the common `Nat` (or any `<`-order) case goes through
+`leadsTo_of_rank_wf`, which reads the order facts off a `WFTrans` instance
+(`wf` + `trans`) so the call site no longer passes the pair by hand. Registering
+another rank order (lexicographic products, subtypes) is an `LT` + `WFTrans`
+instance.
 * **termination of loops**: `loop_can_exit` turns a decreasing variant into the
   "there exists a terminating run" half of termination for `while`; combined with
   `Hoare.loop` (partial correctness) this gives **total correctness** of a loop (see
@@ -815,6 +824,30 @@ descends through the two projections" (`reach_interleave_fst/snd`).
   `WellFounded.induction` directly); two order facts are needed — well-foundedness
   and transitivity — and `hdec` is stated as "equal or strictly below" so the
   hypothesis composes along the prefix without the order being total.
+* **The rank `Nat`-boilerplate is now a type class, not a macro.** The call sites
+  used to pass `(r := (· < ·)) Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)` by
+  hand. Since all four sites rank by `Nat`, this is exactly the two order facts
+  of the rule, so they are bundled in `WFTrans` (`wf` + `trans` for a `LT` order)
+  and `leadsTo_of_rank_wf` reads them off the instance; the general
+  `leadsTo_of_rank_region` keeps its explicit `r` for unregistered orders. Two
+  failed alternatives are worth recording: stating the obligations via a
+  `WFTrans.rel` **projection** hides `<` from `omega` (even with
+  `@[instance_reducible]`), and `[WFTrans W r]` with `r` an implicit metavariable
+  leaves type-class resolution **stuck** ("the second type argument is a
+  metavariable") — the class must be parameterized by the type carrying the
+  `LT`/order instance, not by the relation term.
+* **A "shape only" tactic macro for the five rank obligations does not work.**
+  The obligations are already uniform after the class change (`hstab hreg hdec
+  hprog henab`, fixed binders), so a macro introducing them looks attractive —
+  but Lean tactic macros are **hygienic**: names a macro body introduces
+  (`intro s s' hq h`) are renamed (`s✝`, `hq✝`) and are invisible to the tactics
+  the caller writes next, which is precisely the tail one wanted to keep. Making
+  the names visible requires an `elab` rule with `Lean.mkIdentFrom` to create
+  **deliberately unhygienic** identifiers (verified to work), i.e. ~20 lines of
+  metaprogramming that injects `s`/`hs`/`hq`/`h` into the user's context, with
+  the shadowing hazards that implies — for about a dozen `intro` lines across the
+  whole repo. The hygienic alternatives automate the tail instead (`action_simp`,
+  `step` = `action_simp; try grind`), and that is what the library keeps.
 
 ### 11.5 Lessons from liveness of a shared-memory protocol
 

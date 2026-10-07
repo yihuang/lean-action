@@ -156,8 +156,7 @@ carried by the stepwise stability `hstab`, and the `by_cases` stays inside the
 library rule. -/
 theorem tick_reaches (b : Behavior Nat) (hbeh : IsBehavior TickM b)
     (hfair : WeakFair Tick b) : LeadsTo (fun _ => True) (fun n => n ≥ 2) b :=
-  leadsTo_of_rank_region (T := TickM.next) (A := Tick) (r := (· < ·))
-    Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)
+  leadsTo_of_rank_wf (T := TickM.next) (A := Tick)
     (P := fun _ => True) (Q := fun n => n ≥ 2) (I := fun _ => True) (μ := tickRank)
     hbeh hfair
     (by
