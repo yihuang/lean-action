@@ -194,6 +194,45 @@ theorem two_sync_safe : (C₁.syncModule C₂).Safe
   show (C₁.syncModule C₂).Safe (fun s : Two => s.n₁ = s.l₁.length ∧ s.n₂ = s.l₂.length)
   exact h
 
+/-! ### Liveness of the lock-step composition
+
+Unlike the interleaving, `sync`'s step relation *is* the joint relation, so no
+projection/stutter argument is needed: `leadsTo_of_rank_region` applies with
+`T := C₁.sync C₂` directly. -/
+
+/-- Distance to the joint target `(n₁ ≥ 3, n₂ ≥ 4)`. -/
+def syncRank (s : Two) : Nat := (3 - s.n₁) + (4 - s.n₂)
+
+/-- The joint step is enabled everywhere (`step` always is). -/
+theorem sync_enabled (s : Two) : Enabled (C₁.sync C₂) s := by
+  obtain ⟨a', ha'⟩ := step_enabled (C₁.view.get s)
+  obtain ⟨b', hb'⟩ := step_enabled (C₂.view.get s)
+  exact ⟨C₂.view.set (C₁.view.set s a') b',
+    ViewModule.rel_sync.mpr ⟨a', b', ha', hb', rfl⟩⟩
+
+/-- **Liveness of the lock-step composition.** Weak fairness of the joint step
+drives both counters to their targets. This closes the "liveness for synchronous
+composition" roadmap item with an example rather than a new rule. -/
+theorem two_sync_live (b : Behavior Two) (hbeh : IsBehavior (C₁.syncModule C₂) b)
+    (hfair : WeakFair (C₁.sync C₂) b) :
+    LeadsTo (fun _ : Two => True) (fun s => s.n₁ ≥ 3 ∧ s.n₂ ≥ 4) b :=
+  leadsTo_of_rank_region (T := C₁.sync C₂) (A := C₁.sync C₂) (r := (· < ·))
+    Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)
+    (P := fun _ => True) (Q := fun s => s.n₁ ≥ 3 ∧ s.n₂ ≥ 4)
+    (I := fun _ => True) (μ := syncRank) hbeh hfair
+    (by intro s s' _ _ _; simp only [true_and]; omega)
+    (by intro s _ _; trivial)
+    (by
+      intro s s' _ _ h
+      obtain ⟨h1, h2⟩ := sync_advances_both s s' h
+      simp only [syncRank]; omega)
+    (by
+      intro s _ hq s' h
+      have hpos : syncRank s > 0 := by simp only [syncRank]; omega
+      obtain ⟨h1, h2⟩ := sync_advances_both s s' h
+      simp only [syncRank] at hpos ⊢; omega)
+    (by intro s _ _; exact sync_enabled s)
+
 /-! ## Nested footprints compose
 
 Disjointness of nested views is built from the base case plus the lens laws

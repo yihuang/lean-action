@@ -572,7 +572,9 @@ version, with `nonStutter A` the `A`-steps that change the state. Finally
 argument: it replaces the global invariant `hI : ∀ n, μ (b n) > 0 → I (b n)`
 (which fails after an enter/exit cycle) by WF1's `hstab`, discharging the
 `by_cases`/prefix induction **once** in the library — so the rank route and the
-WF1 route now have the same call-site shape.
+WF1 route now have the same call-site shape. The rank is general (`μ : σ → W`
+for a transitive well-founded `r`, with `wf_progress_false` the sequence-level
+engine), not `Nat`-specific.
 * **termination of loops**: `loop_can_exit` turns a decreasing variant into the
   "there exists a terminating run" half of termination for `while`; combined with
   `Hoare.loop` (partial correctness) this gives **total correctness** of a loop (see
@@ -620,8 +622,11 @@ induction, because it is not globally preserved).
   not increase",
   (b) **systematic support for non-state relies** (every rely here is a
   `σ → σ → Prop`; how to generate and validate a suitable rely from code has no
-  methodology yet); (c) **liveness for synchronous composition** (only safety so
-  far); (d) footprint inference is complete for **flat** structures
+  methodology yet); (c) **liveness for synchronous composition** no longer needs a
+  new rule — the joint step is the step relation `T`, so `leadsTo_of_rank_region`
+  applies directly (`Examples/Frame.two_sync_live`; the projection/stutter
+  machinery is only needed for the *interleaving*); (d) footprint inference is
+  complete for **flat** structures
   (deriver certificates + `disjoint_auto`) and now composes (`Disjoint.comp_of_disjoint`
   / `comp_left` / `comp_right`) and handles the array-like case conditionally
   (`upd`/`upd_noteq`/`upd_comm`, `DisjointUnder`); arbitrary hand-written
@@ -654,8 +659,8 @@ Examples that compile, and what they cover:
 | `Examples/Liveness` | inevitability under fairness (a counter must reach 3), an explicit theorem that **liveness fails without fairness** (a stuttering behavior), the safety→`Always` bridge (including `Always`-form mutual exclusion), `while` termination and loop total correctness |
 | `Examples/MutexLiveness` | liveness of the shared-memory protocol: a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant); the enter direction is also proved with the rank-free WF1 rule (`leadsTo_of_wf1`) |
 | `Examples/ParallelLiveness` | liveness composition for interleaving: component liveness (projection + fairness transfer + sequence-level rank argument) into product liveness, with a counterexample showing the fairness hypothesis for the right component cannot be dropped |
-| `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous composition (`sync`), nested footprints (`Disjoint.comp_of_disjoint`), indexed/array footprints (`upd`, conditional on `i ≠ j`), conditional disjointness (`DisjointUnder`, aliasing freedom), and `¬ Disjoint` explaining why mutex is outside this layer |
-| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) needing no explicit `Rel`, the liveness counterpart (`leadsTo_of_rank_region` with the environment rely bounding the variant), and `¬ Disjoint` showing why the frame layer cannot do it |
+| `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous safety and liveness (`sync`, `two_sync_live`), nested footprints (`Disjoint.comp_of_disjoint`), indexed/array footprints (`upd`, conditional on `i ≠ j`), conditional disjointness (`DisjointUnder`, aliasing freedom), and `¬ Disjoint` explaining why mutex is outside this layer |
+| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) needing no explicit `Rel`, the liveness counterpart (`leadsTo_of_rank_region` with an **opaque** environment known only by its rely `s'.v ≤ s.v`), and `¬ Disjoint` showing why the frame layer cannot do it |
 
 ---
 
@@ -792,7 +797,11 @@ descends through the two projections" (`reach_interleave_fst/snd`).
   collapses to a single `apply` that shares `wf1_env` with the WF1 route. The
   general lesson: **a "global" hypothesis that a rule only uses on a prefix should
   be restated as that prefix property** — and WF1's `henv` shape *is* the prefix
-  property, which is why the two rules fuse cleanly.
+  property, which is why the two rules fuse cleanly. Generalizing the rank to
+  `μ : σ → W` then only touches this one rule (the engine `wf_progress_false` uses
+  `WellFounded.induction` directly); two order facts are needed — well-foundedness
+  and transitivity — and `hdec` is stated as "equal or strictly below" so the
+  hypothesis composes along the prefix without the order being total.
 
 ### 11.5 Lessons from liveness of a shared-memory protocol
 
@@ -987,6 +996,12 @@ difference:
   `rel_sync` *can* be written with `Iff.rfl` … in practice even with `abbrev` one
   still needs the manual `Prod.snd` (previous point), but `abbrev` saves `unfold`
   elsewhere.
+* **`sync` liveness is an instance, not a rule.** Unlike the interleaving — whose
+  projection stutters and therefore needs `eventually_zero_of_seq` /
+  `leadsTo_of_wf1_seq` — the lock-step joint step *is* the step relation, so
+  `leadsTo_of_rank_region` applies with `T := M₁.sync M₂` directly
+  (`Examples/Frame.two_sync_live`). The roadmap item "liveness for synchronous
+  composition" turned out to be a missing *example*, not a missing theorem.
 
 ### 11.10 Conclusions
 

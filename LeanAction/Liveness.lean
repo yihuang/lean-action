@@ -493,31 +493,81 @@ a `by_cases (∃ N, Q (b N))` around the rank argument; this rule packages that
 split once, replacing the global invariant by the **stepwise** stability of
 `P ∧ ¬Q` — exactly WF1's `henv`. -/
 
-/-- **`LeadsTo` from a stepwise-stable region plus a well-founded rank.** If, from
-`P ∧ ¬Q`,
+/-- **No infinite descent.** A sequence whose value never increases (`hdec`, in
+the `=`-or-strictly-below sense) in a transitive well-founded order, which
+strictly decreases (`hprog`) at a step that weak fairness guarantees (`hfair`,
+with `A` always enabled), is impossible. This is the `by_cases`-free engine of
+`leadsTo_of_rank_region` below. -/
+theorem wf_progress_false {W : Type} {r : W → W → Prop} (hwf : WellFounded r)
+    (htrans : ∀ ⦃a b c : W⦄, r a b → r b c → r a c)
+    {μ : σ → W} {A : Action σ} {b : Behavior σ}
+    (hdec : ∀ n, μ (b (n + 1)) = μ (b n) ∨ r (μ (b (n + 1))) (μ (b n)))
+    (hfair : WeakFair A b) (hen : ∀ n, Enabled A (b n))
+    (hprog : ∀ n, rel A (b n) (b (n + 1)) → r (μ (b (n + 1))) (μ (b n))) :
+    False := by
+  let f : Nat → W := fun n => μ (b n)
+  have hfdec : ∀ n, f (n + 1) = f n ∨ r (f (n + 1)) (f n) := hdec
+  have hchain : ∀ n d, f (n + d) = f n ∨ r (f (n + d)) (f n) := by
+    intro n d
+    induction d with
+    | zero => exact Or.inl (by rw [Nat.add_zero])
+    | succ d ih =>
+        have hs := hfdec (n + d)
+        rw [Nat.add_succ] at hs ⊢
+        rcases ih with heq | hlt
+        · rcases hs with heq2 | hlt2
+          · exact Or.inl (heq2.trans heq)
+          · exact Or.inr (by rwa [heq] at hlt2)
+        · rcases hs with heq2 | hlt2
+          · exact Or.inr (by rwa [heq2])
+          · exact Or.inr (htrans hlt2 hlt)
+  let C : W → Prop := fun w => ∀ n, f n = w → ∀ j, n ≤ j → ¬ r (f (j + 1)) (f j)
+  have hC : ∀ w, C w := fun w =>
+    hwf.induction (C := C) w (fun x ih => by
+      intro n hn j hj hAj
+      have hd : f j = f n ∨ r (f j) (f n) := by
+        have := hchain n (j - n)
+        rwa [Nat.add_sub_of_le hj] at this
+      have hdown : r (f (j + 1)) x := by
+        rw [← hn]
+        rcases hd with heq | hlt
+        · simpa [heq] using hAj
+        · exact htrans hAj hlt
+      obtain ⟨j', hj', hAj'⟩ := hfair (j + 1) (fun m _ => hen m)
+      exact ih (f (j + 1)) hdown (j + 1) rfl j' hj' (hprog j' hAj'))
+  obtain ⟨j, -, hAj⟩ := hfair 0 (fun m _ => hen m)
+  exact hC (f 0) 0 rfl j (Nat.zero_le j) (hprog j hAj)
+
+/-- **`LeadsTo` from a stepwise-stable region plus a well-founded rank.** If,
+from `P ∧ ¬Q`,
 * every step either reaches `Q` or keeps `P ∧ ¬Q` (`hstab` — WF1's `henv`),
-* `P ∧ ¬Q` implies the rank invariant `I` while `μ > 0` (`hreg`),
-* no step increases `μ` on `I` (`hdec`),
-* the progress action `A` decreases `μ` on `I` (`hprog`) and stays enabled there
-  (`henab`),
-and `μ = 0` implies the goal (`hgoal`), then weak fairness for `A` gives
-`LeadsTo P Q`.
+* `P ∧ ¬Q` implies the rank invariant `I` (`hreg`),
+* no step increases `μ` on `I` (`hdec`, `μ s' = μ s` or `μ s' ≺ μ s`),
+* the progress action `A` decreases `μ` strictly on `I` (`hprog`) and stays
+  enabled there (`henab`),
+then weak fairness for `A` gives `LeadsTo P Q`.
 
 The `by_cases` that global-invariant rank proofs carry by hand is discharged here
 once, by induction on the prefix: as long as `Q` has not occurred, `P ∧ ¬Q` is
-stable, so `I` holds and the sequence-level rank theorem applies. This is the
+stable, so `I` holds and `wf_progress_false` closes the contradiction. This is the
 rule-of-thumb for RG liveness as well: with `T := A₁ <|> A₂`, `hstab`/`hdec` split
 by component and the environment half is the "under the rely, the variant does not
-increase" obligation. -/
-theorem leadsTo_of_rank_region {T A : Action σ} {P Q I : Nondet σ} {μ : σ → Nat}
-    {b : Behavior σ}
+increase" obligation.
+
+The rank is general (`W` with a well-founded `r`) rather than `Nat`. Two order
+facts are needed: well-foundedness, and *transitivity* (Lean's
+`WellFoundedRelation` does not bundle the latter) — `hdec` is stated as
+"equal or strictly below" rather than `¬ r (μ s) (μ s')` precisely so that the
+hypothesis composes along the prefix without `r` being total. -/
+theorem leadsTo_of_rank_region {T A : Action σ} {P Q I : Nondet σ} {W : Type}
+    {r : W → W → Prop} (hwf : WellFounded r)
+    (htrans : ∀ ⦃a b c : W⦄, r a b → r b c → r a c) {μ : σ → W} {b : Behavior σ}
     (hbeh : ∀ n, rel T (b n) (b (n + 1))) (hfair : WeakFair A b)
     (hstab : ∀ s s', P s → ¬ Q s → rel T s s' → (P s' ∧ ¬ Q s') ∨ Q s')
-    (hreg : ∀ s, P s → ¬ Q s → μ s > 0 → I s)
-    (hdec : ∀ s s', I s → μ s > 0 → rel T s s' → μ s' ≤ μ s)
-    (hprog : ∀ s, I s → μ s > 0 → ∀ s', rel A s s' → μ s' < μ s)
-    (henab : ∀ s, I s → μ s > 0 → Enabled A s)
-    (hgoal : ∀ s, μ s = 0 → Q s) :
+    (hreg : ∀ s, P s → ¬ Q s → I s)
+    (hdec : ∀ s s', I s → ¬ Q s → rel T s s' → μ s' = μ s ∨ r (μ s') (μ s))
+    (hprog : ∀ s, I s → ¬ Q s → ∀ s', rel A s s' → r (μ s') (μ s))
+    (henab : ∀ s, I s → ¬ Q s → Enabled A s) :
     LeadsTo P Q b := by
   intro n hn
   by_cases hreached : ∃ m, n ≤ m ∧ Q (b m)
@@ -537,19 +587,14 @@ theorem leadsTo_of_rank_region {T A : Action σ} {P Q I : Nondet σ} {μ : σ �
           rcases hstab _ _ ih.1 ih.2 (hbeh' k) with h | h
           · exact h
           · exact absurd h (hno (n + (k + 1)) (by omega))
-    have hI' : ∀ k, μ (b' k) > 0 → I (b' k) :=
-      fun k hpos => hreg _ (hstable' k).1 (hstable' k).2 hpos
-    have hdec' : ∀ k, I (b' k) → μ (b' k) > 0 → μ (b' (k + 1)) ≤ μ (b' k) :=
-      fun k hi hpos => hdec _ _ hi hpos (hbeh' k)
-    have hA' : ∀ k, I (b' k) → μ (b' k) > 0 →
-        rel A (b' k) (b' (k + 1)) → μ (b' (k + 1)) < μ (b' k) :=
-      fun k hi hpos h => hprog _ hi hpos _ h
-    have hen' : ∀ k, I (b' k) → μ (b' k) > 0 → ∃ s', rel A (b' k) s' :=
-      fun k hi hpos => henab _ hi hpos
-    have hfair' : WeakFair A b' := by
-      simpa [b'] using weakFair_add hfair n
-    obtain ⟨N, -, hz⟩ := eventually_zero_of_seq hI' hdec' hA' hen' hfair' 0
-    exact ⟨n + N, Nat.le_add_right n N, hgoal _ hz⟩
+    have hI' : ∀ k, I (b' k) := fun k => hreg _ (hstable' k).1 (hstable' k).2
+    have hdec' : ∀ k, μ (b' (k + 1)) = μ (b' k) ∨ r (μ (b' (k + 1))) (μ (b' k)) :=
+      fun k => hdec _ _ (hI' k) (hstable' k).2 (hbeh' k)
+    have hprog' : ∀ k, rel A (b' k) (b' (k + 1)) → r (μ (b' (k + 1))) (μ (b' k)) :=
+      fun k h => hprog _ (hI' k) (hstable' k).2 _ h
+    have hen' : ∀ k, Enabled A (b' k) := fun k => henab _ (hI' k) (hstable' k).2
+    have hfair' : WeakFair A b' := by simpa [b'] using weakFair_add hfair n
+    exact (wf_progress_false hwf htrans hdec' hfair' hen' hprog').elim
 
 /-! ## Compositionality for interleaving
 

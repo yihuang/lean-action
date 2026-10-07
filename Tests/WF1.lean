@@ -159,22 +159,23 @@ carried by the stepwise stability `hstab`, and the `by_cases` stays inside the
 library rule. -/
 theorem tick_reaches (b : Behavior Nat) (hbeh : IsBehavior TickM b)
     (hfair : WeakFair Tick b) : LeadsTo (fun _ => True) (fun n => n ≥ 2) b :=
-  leadsTo_of_rank_region (T := TickM.next) (A := Tick) (P := fun _ => True)
-    (Q := fun n => n ≥ 2) (I := fun _ => True) (μ := tickRank) hbeh hfair
+  leadsTo_of_rank_region (T := TickM.next) (A := Tick) (r := (· < ·))
+    Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)
+    (P := fun _ => True) (Q := fun n => n ≥ 2) (I := fun _ => True) (μ := tickRank)
+    hbeh hfair
+    (by
+      intro s s' _ _ h
+      simp only [TickM, Tick, rel_update] at h
+      rw [h]; simp only [true_and]; omega)
+    (by intro s _ _; trivial)
     (by
       intro s s' _ hq h
       simp only [TickM, Tick, rel_update] at h
-      rw [h]; simp only [true_and]; omega)
-    (by intro s _ _ _; trivial)
+      rw [h]; simp only [tickRank] at hq ⊢; omega)
     (by
-      intro s s' _ hpos h
-      simp only [TickM, Tick, rel_update] at h
-      rw [h]; simp only [tickRank] at hpos ⊢; omega)
-    (by
-      intro s _ hpos s' h
+      intro s _ hq s' h
       simp only [Tick, rel_update] at h
-      rw [h]; simp only [tickRank] at hpos ⊢; omega)
+      rw [h]; simp only [tickRank] at hq ⊢; omega)
     (by intro s _ _; exact ⟨s + 1, rfl⟩)
-    (by intro s hz; simp only [tickRank] at hz; omega)
 
 end Tests.WF1

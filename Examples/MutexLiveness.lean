@@ -129,16 +129,21 @@ induction once). `region_until_goal` above is the explicit
 `relyGuarantee_until` form of the same prefix fact. -/
 theorem leadsTo_enter1 (b : Behavior St) (hbeh : IsBehavior M b)
     (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b :=
-  leadsTo_of_rank_region (T := M.next) hbeh hfair wf1_env
-    (hreg := fun s hs _ _ => hs)
+  leadsTo_of_rank_region (T := M.next) (r := (· < ·)) Nat.lt_wfRel.wf
+    (fun _ _ _ => Nat.lt_trans) (μ := rank) hbeh hfair wf1_env
+    (hreg := fun s hs _ => hs)
     (hdec := by
-      intro s s' _ hpos _
+      intro s s' _ hq _
+      have hpos : rank s > 0 := rank_pos_iff.mpr hq
       have hs : rank s = 1 := by have := rank_le_one s; omega
       have hs' : rank s' ≤ 1 := rank_le_one s'
       omega)
     (hprog := by
-      intro s hs hpos s' hstep
-      have hs1 : rank s = 1 := by have := rank_le_one s; omega
+      intro s hs hq s' hstep
+      have hs1 : rank s = 1 := by
+        have := rank_le_one s
+        have := rank_pos_iff.mpr hq
+        omega
       have hpc : s'.pc1 = 2 := by
         simp only [Region] at hs
         simp only [enter1] at hstep
@@ -150,7 +155,6 @@ theorem leadsTo_enter1 (b : Behavior St) (hbeh : IsBehavior M b)
       intro s hs _
       simp only [Region] at hs
       simpa [enter1] using And.intro hs.1 hs.2.1)
-    (hgoal := fun s hz => rank_eq_zero_iff.mp hz)
 
 /-- The `Eventually` form: from the region, process 1 reaches the critical
 section. -/

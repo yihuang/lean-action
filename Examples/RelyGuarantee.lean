@@ -149,27 +149,46 @@ def tick : Action Cell := guard (fun s => s.v > 0) ;; update fun s => { s with v
 `s'.v ≤ s.v`. -/
 def env : Action Cell := update (fun s => { s with v := s.v - 1 }) <|> skip
 
-/-- **The counter reaches zero.** `hstab` is trivial here (its target is the
-tautology `v > 0 ∨ v = 0`); the content is `hdec`, which splits into `tick`'s
-own step and the *environment rely*. -/
-theorem eventually_zero (b : Behavior Cell)
-    (hbeh : ∀ n, rel (tick <|> env) (b n) (b (n + 1)))
+/-- The rely, discharged for the concrete `env`: it never increases `v`. -/
+theorem env_rely {s s' : Cell} (h : rel env s s') : s'.v ≤ s.v := by
+  simp only [env] at h
+  rw [rel_orElse] at h
+  rcases h with h | h
+  · simp only [rel_update] at h; rw [h]; show s.v - 1 ≤ s.v; omega
+  · simp only [rel_skip] at h; rw [h]; exact Nat.le_refl _
+
+/-- **Liveness with an opaque environment.** `E` is a *parameter* and only its
+rely `hrely` is known — its code never appears in the proof. This is the liveness
+dual of the safety `Compatible` example: `hstab` is trivial (its target is the
+tautology `v > 0 ∨ v = 0`), `hdec` splits into `tick`'s own step and the
+environment rely, and the rank route's `by_cases` stays inside the library rule. -/
+theorem eventually_zero_opaque (E : Action Cell) (b : Behavior Cell)
+    (hrely : ∀ s s', rel E s s' → s'.v ≤ s.v)
+    (hbeh : ∀ n, rel (tick <|> E) (b n) (b (n + 1)))
     (hfair : WeakFair tick b) : LeadsTo (fun _ => True) (fun s => s.v = 0) b :=
-  leadsTo_of_rank_region (T := tick <|> env) (A := tick) (P := fun _ => True)
-    (Q := fun s => s.v = 0) (I := fun _ => True) (μ := fun s => s.v) hbeh hfair
+  leadsTo_of_rank_region (T := tick <|> E) (A := tick) (r := (· < ·))
+    Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)
+    (P := fun _ => True) (Q := fun s => s.v = 0) (I := fun _ => True)
+    (μ := fun s => s.v) hbeh hfair
     (by intro s s' _ _ _; simp only [true_and]; omega)
-    (by intro s _ _ _; trivial)
+    (by intro s _ _; trivial)
     (by
-      intro s s' _ hpos h
-      simp only [tick, env] at h
-      action_simp
-      grind)
+      intro s s' _ hq h
+      rw [rel_orElse] at h
+      rcases h with h | h
+      · simp only [tick] at h; action_simp; grind
+      · exact Or.symm (Nat.le_iff_lt_or_eq.mp (hrely s s' h)))
     (by
-      intro s _ hpos s' h
+      intro s _ hq s' h
       simp only [tick] at h
       action_simp
       grind)
-    (by intro s _ hpos; simpa [tick] using hpos)
-    (by intro s hz; exact hz)
+    (by intro s _ hq; simpa [tick] using Nat.pos_of_ne_zero hq)
+
+/-- The concrete environment instance, via `env_rely`. -/
+theorem eventually_zero (b : Behavior Cell)
+    (hbeh : ∀ n, rel (tick <|> env) (b n) (b (n + 1)))
+    (hfair : WeakFair tick b) : LeadsTo (fun _ => True) (fun s => s.v = 0) b :=
+  eventually_zero_opaque env b (fun _ _ h => env_rely h) hbeh hfair
 
 end Examples.RelyGuarantee
