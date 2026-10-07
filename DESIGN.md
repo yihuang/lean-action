@@ -567,7 +567,12 @@ step relation** (the module-level `leadsTo_of_wf1` is the `T = M.next` case), so
 WF1 applies to the *projection* of an interleaved behavior just as
 `eventually_zero_of_seq` does — the structural counterpart of the rank layer.
 `leadsTo_of_wf1(_seq)_nonStutter` is the TLA `⟨A⟩` (non-stuttering progress)
-version, with `nonStutter A` the `A`-steps that change the state.
+version, with `nonStutter A` the `A`-steps that change the state. Finally
+`leadsTo_of_rank_region` **fuses** WF1's stepwise stability with the rank
+argument: it replaces the global invariant `hI : ∀ n, μ (b n) > 0 → I (b n)`
+(which fails after an enter/exit cycle) by WF1's `hstab`, discharging the
+`by_cases`/prefix induction **once** in the library — so the rank route and the
+WF1 route now have the same call-site shape.
 * **termination of loops**: `loop_can_exit` turns a decreasing variant into the
   "there exists a terminating run" half of termination for `while`; combined with
   `Hoare.loop` (partial correctness) this gives **total correctness** of a loop (see
@@ -609,8 +614,10 @@ induction, because it is not globally preserved).
   of relies** — the safety fragment no longer needs one: `derivedRely`/
   `preserves_of_guarantees` compose the two guarantee lemmas directly ("rely as
   output"), and explicit `Rel`s remain only for the residual tier (value-constraint
-  interfaces like `s'.v ≤ s.v`); what is still missing is a *liveness* RG rule,
-  where the environment obligation is about a variant rather than an invariant;
+  interfaces like `s'.v ≤ s.v`); the *liveness* RG rule is now
+  `leadsTo_of_rank_region` — with `T := A₁ <|> A₂` its `hstab`/`hdec` split by
+  component and the environment half is exactly "under the rely, the variant does
+  not increase",
   (b) **systematic support for non-state relies** (every rely here is a
   `σ → σ → Prop`; how to generate and validate a suitable rely from code has no
   methodology yet); (c) **liveness for synchronous composition** (only safety so
@@ -648,7 +655,7 @@ Examples that compile, and what they cover:
 | `Examples/MutexLiveness` | liveness of the shared-memory protocol: a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant); the enter direction is also proved with the rank-free WF1 rule (`leadsTo_of_wf1`) |
 | `Examples/ParallelLiveness` | liveness composition for interleaving: component liveness (projection + fairness transfer + sequence-level rank argument) into product liveness, with a counterexample showing the fairness hypothesis for the right component cannot be dropped |
 | `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous composition (`sync`), nested footprints (`Disjoint.comp_of_disjoint`), indexed/array footprints (`upd`, conditional on `i ≠ j`), conditional disjointness (`DisjointUnder`, aliasing freedom), and `¬ Disjoint` explaining why mutex is outside this layer |
-| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) needing no explicit `Rel`, and `¬ Disjoint` showing why the frame layer cannot do it |
+| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) needing no explicit `Rel`, the liveness counterpart (`leadsTo_of_rank_region` with the environment rely bounding the variant), and `¬ Disjoint` showing why the frame layer cannot do it |
 
 ---
 
@@ -775,6 +782,17 @@ descends through the two projections" (`reach_interleave_fst/snd`).
   introduction principle `LeadsTo.of_shift` are each tiny, but without them every
   packaging proof (e.g. `Examples/MutexLiveness.leadsTo_enter1`) re-implements the
   `∀ n, ∃ m ≥ n` bookkeeping and the behavior-shift by hand.
+* **Fusing the two liveness engines closes the "global invariant" gap.** The rank
+  theorems assume `hI : ∀ n, μ (b n) > 0 → I (b n)` — a *time-indexed universal*.
+  For the mutex that is false (after an enter/exit cycle the state is outside
+  `Region` again while `μ > 0`), so the proof carried a
+  `by_cases (∃ N, Q (b N))` and only ran the rank argument on the never-reached
+  prefix. The fused rule `leadsTo_of_rank_region` replaces `hI` by WF1's *stepwise*
+  `hstab` and performs that prefix induction once; `eventually_enter1` then
+  collapses to a single `apply` that shares `wf1_env` with the WF1 route. The
+  general lesson: **a "global" hypothesis that a rule only uses on a prefix should
+  be restated as that prefix property** — and WF1's `henv` shape *is* the prefix
+  property, which is why the two rules fuse cleanly.
 
 ### 11.5 Lessons from liveness of a shared-memory protocol
 

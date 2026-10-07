@@ -21,7 +21,9 @@ guarantee lemmas directly, and `Compatible` with the `derivedRely I` is
 a *prefix* property ("this region holds until the goal is reached"), which is what
 `relyGuarantee_until` is for and what `Examples/MutexLiveness.region_until_goal`
 now uses.
--/
+
+The file closes the loop on *liveness* too: `leadsTo_of_rank_region` with the
+environment rely `s'.v ≤ s.v` makes the counter reach zero (`eventually_zero`). -/
 import LeanAction
 
 open LeanAction
@@ -131,5 +133,43 @@ theorem next_preserves_direct : Preserves next I := by
   simp only [next, dec, bump, I] at hs h ⊢
   action_simp
   grind
+
+/-! ## Liveness: the environment rely bounds the variant
+
+`leadsTo_of_rank_region` is the liveness counterpart of the rely/guarantee
+composition. Here the progress action `tick` decrements the counter and the
+*environment* may do anything that does not increase it — concretely `env`
+decrements or stutters, the rely `s'.v ≤ s.v`. The `hstab`/`hdec` obligations are
+per-component, and the rank route's `by_cases` stays inside the library rule. -/
+
+/-- Progress: decrement, only while positive. -/
+def tick : Action Cell := guard (fun s => s.v > 0) ;; update fun s => { s with v := s.v - 1 }
+
+/-- The environment: decrement or stutter — any step allowed by the rely
+`s'.v ≤ s.v`. -/
+def env : Action Cell := update (fun s => { s with v := s.v - 1 }) <|> skip
+
+/-- **The counter reaches zero.** `hstab` is trivial here (its target is the
+tautology `v > 0 ∨ v = 0`); the content is `hdec`, which splits into `tick`'s
+own step and the *environment rely*. -/
+theorem eventually_zero (b : Behavior Cell)
+    (hbeh : ∀ n, rel (tick <|> env) (b n) (b (n + 1)))
+    (hfair : WeakFair tick b) : LeadsTo (fun _ => True) (fun s => s.v = 0) b :=
+  leadsTo_of_rank_region (T := tick <|> env) (A := tick) (P := fun _ => True)
+    (Q := fun s => s.v = 0) (I := fun _ => True) (μ := fun s => s.v) hbeh hfair
+    (by intro s s' _ _ _; simp only [true_and]; omega)
+    (by intro s _ _ _; trivial)
+    (by
+      intro s s' _ hpos h
+      simp only [tick, env] at h
+      action_simp
+      grind)
+    (by
+      intro s _ hpos s' h
+      simp only [tick] at h
+      action_simp
+      grind)
+    (by intro s _ hpos; simpa [tick] using hpos)
+    (by intro s hz; exact hz)
 
 end Examples.RelyGuarantee

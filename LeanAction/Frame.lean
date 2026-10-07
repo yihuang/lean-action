@@ -480,6 +480,35 @@ theorem parallel_safe {P : Nondet α} {Q : Nondet β} (hd : Disjoint M₁.view M
     exact ⟨hinit₁ s hs.1, hinit₂ s hs.2⟩
   · exact parallel_preserves hd hP hQ
 
+/-- Conditional (`DisjointUnder`) parallel composition, packaged at the
+`ViewModule` layer: the component `get_set` laws come from the record, and the
+condition `P` must itself be preserved by both components. -/
+theorem parallel_preserves_under {P : Nondet σ} {P₁ : Nondet α} {P₂ : Nondet β}
+    (hd : DisjointUnder P M₁.view M₂.view)
+    (hP₁ : Preserves (focusView M₁.view M₁.next) P)
+    (hP₂ : Preserves (focusView M₂.view M₂.next) P)
+    (h₁ : Preserves M₁.next P₁) (h₂ : Preserves M₂.next P₂) :
+    Preserves (M₁.parallel M₂).next
+      (fun s => P s ∧ P₁ (M₁.view.get s) ∧ P₂ (M₂.view.get s)) :=
+  LeanAction.parallel_preserves_under hd M₁.next M₂.next M₁.get_set M₂.get_set
+    hP₁ hP₂ h₁ h₂
+
+/-- Safety of the conditionally-composed system from initial conditions and
+component invariants (the `DisjointUnder` analogue of `parallel_safe`). -/
+theorem parallel_safe_under {P : Nondet σ} {P₁ : Nondet α} {P₂ : Nondet β}
+    (hd : DisjointUnder P M₁.view M₂.view)
+    (hinitP : ∀ s, M₁.init s → M₂.init s → P s)
+    (hinit₁ : ∀ s, M₁.init s → P₁ (M₁.view.get s))
+    (hinit₂ : ∀ s, M₂.init s → P₂ (M₂.view.get s))
+    (hP₁ : Preserves (focusView M₁.view M₁.next) P)
+    (hP₂ : Preserves (focusView M₂.view M₂.next) P)
+    (h₁ : Preserves M₁.next P₁) (h₂ : Preserves M₂.next P₂) :
+    (M₁.parallel M₂).Safe (fun s => P s ∧ P₁ (M₁.view.get s) ∧ P₂ (M₂.view.get s)) := by
+  apply Module.safe_of_preserves
+  · intro s hs
+    exact ⟨hinitP s hs.1 hs.2, hinit₁ s hs.1, hinit₂ s hs.2⟩
+  · exact parallel_preserves_under hd hP₁ hP₂ h₁ h₂
+
 /-! ## Liveness -/
 
 /-- A projected step of the composition: the component either stutters (the other
@@ -805,6 +834,7 @@ elab "disjoint_auto" : tactic => do
             try
               let gs ← g.apply e
               if gs.isEmpty then
+                trace[LeanAction.disjoint_auto] "closed by certificate {cert}"
                 replaceMainGoal []
                 return
             catch _ => pure ()

@@ -221,6 +221,20 @@ theorem weakFair_add {A : Action σ} {b : Behavior σ} (h : WeakFair A b) (n : N
   have h2 : n + (j - n + 1) = j + 1 := by omega
   simpa [TakesStep, h1, h2] using hstep
 
+/-- Shifting a behavior in time preserves strong fairness. -/
+theorem strongFair_add {A : Action σ} {b : Behavior σ} (h : StrongFair A b) (n : Nat) :
+    StrongFair A (fun k => b (n + k)) := by
+  intro m hen
+  have hen' : ∀ k, ∃ i, k ≤ i ∧ ∃ s', rel A (b i) s' := by
+    intro k
+    obtain ⟨j, hj, hs⟩ := hen (max m (k - n))
+    exact ⟨n + j, by omega, hs⟩
+  obtain ⟨i, hi, hstep⟩ := h (n + m) hen'
+  refine ⟨i - n, by omega, ?_⟩
+  have h1 : n + (i - n) = i := by omega
+  have h2 : n + (i - n + 1) = i + 1 := by omega
+  simpa [TakesStep, h1, h2] using hstep
+
 /-- **WF1, with an arbitrary step relation.** `T` is the environment's step
 relation; the rule touches the environment only through `henv`, so nothing forces
 `T = M.next`. Keeping `T` abstract is what makes WF1 applicable to the
@@ -469,6 +483,73 @@ theorem leadsTo_zero_of_weakFair {M : Module σ} {A : Action σ} {μ : σ → Na
     (henabled : ∀ s, μ s > 0 → ∃ s', rel A s s')
     (hfair : WeakFair A b) : LeadsTo (fun _ : σ => True) (fun s => μ s = 0) b :=
   fun n _ => eventually_zero_of_weakFair hbeh hA henv henabled hfair n
+
+/-! ## WF1 meets the rank argument
+
+The rank theorems above assume their invariant *globally* (`hI : ∀ n, μ (b n) > 0
+→ I (b n)`). For a shared-memory protocol that is too strong: after an enter/exit
+cycle the process is back outside the region with `μ > 0`. The usual workaround is
+a `by_cases (∃ N, Q (b N))` around the rank argument; this rule packages that
+split once, replacing the global invariant by the **stepwise** stability of
+`P ∧ ¬Q` — exactly WF1's `henv`. -/
+
+/-- **`LeadsTo` from a stepwise-stable region plus a well-founded rank.** If, from
+`P ∧ ¬Q`,
+* every step either reaches `Q` or keeps `P ∧ ¬Q` (`hstab` — WF1's `henv`),
+* `P ∧ ¬Q` implies the rank invariant `I` while `μ > 0` (`hreg`),
+* no step increases `μ` on `I` (`hdec`),
+* the progress action `A` decreases `μ` on `I` (`hprog`) and stays enabled there
+  (`henab`),
+and `μ = 0` implies the goal (`hgoal`), then weak fairness for `A` gives
+`LeadsTo P Q`.
+
+The `by_cases` that global-invariant rank proofs carry by hand is discharged here
+once, by induction on the prefix: as long as `Q` has not occurred, `P ∧ ¬Q` is
+stable, so `I` holds and the sequence-level rank theorem applies. This is the
+rule-of-thumb for RG liveness as well: with `T := A₁ <|> A₂`, `hstab`/`hdec` split
+by component and the environment half is the "under the rely, the variant does not
+increase" obligation. -/
+theorem leadsTo_of_rank_region {T A : Action σ} {P Q I : Nondet σ} {μ : σ → Nat}
+    {b : Behavior σ}
+    (hbeh : ∀ n, rel T (b n) (b (n + 1))) (hfair : WeakFair A b)
+    (hstab : ∀ s s', P s → ¬ Q s → rel T s s' → (P s' ∧ ¬ Q s') ∨ Q s')
+    (hreg : ∀ s, P s → ¬ Q s → μ s > 0 → I s)
+    (hdec : ∀ s s', I s → μ s > 0 → rel T s s' → μ s' ≤ μ s)
+    (hprog : ∀ s, I s → μ s > 0 → ∀ s', rel A s s' → μ s' < μ s)
+    (henab : ∀ s, I s → μ s > 0 → Enabled A s)
+    (hgoal : ∀ s, μ s = 0 → Q s) :
+    LeadsTo P Q b := by
+  intro n hn
+  by_cases hreached : ∃ m, n ≤ m ∧ Q (b m)
+  · exact hreached
+  · have hno : ∀ m, n ≤ m → ¬ Q (b m) := fun m hm hq => hreached ⟨m, hm, hq⟩
+    -- shift to the time at which the region is known to hold, then run the rank
+    -- argument with `I` derived from the prefix where `Q` is still unreached
+    let b' : Behavior σ := fun k => b (n + k)
+    have hbeh' : ∀ k, rel T (b' k) (b' (k + 1)) := fun k => by
+      show rel T (b (n + k)) (b (n + k + 1))
+      exact hbeh (n + k)
+    have hstable' : ∀ k, P (b' k) ∧ ¬ Q (b' k) := by
+      intro k
+      induction k with
+      | zero => exact ⟨hn, hno n (Nat.le_refl n)⟩
+      | succ k ih =>
+          rcases hstab _ _ ih.1 ih.2 (hbeh' k) with h | h
+          · exact h
+          · exact absurd h (hno (n + (k + 1)) (by omega))
+    have hI' : ∀ k, μ (b' k) > 0 → I (b' k) :=
+      fun k hpos => hreg _ (hstable' k).1 (hstable' k).2 hpos
+    have hdec' : ∀ k, I (b' k) → μ (b' k) > 0 → μ (b' (k + 1)) ≤ μ (b' k) :=
+      fun k hi hpos => hdec _ _ hi hpos (hbeh' k)
+    have hA' : ∀ k, I (b' k) → μ (b' k) > 0 →
+        rel A (b' k) (b' (k + 1)) → μ (b' (k + 1)) < μ (b' k) :=
+      fun k hi hpos h => hprog _ hi hpos _ h
+    have hen' : ∀ k, I (b' k) → μ (b' k) > 0 → ∃ s', rel A (b' k) s' :=
+      fun k hi hpos => henab _ hi hpos
+    have hfair' : WeakFair A b' := by
+      simpa [b'] using weakFair_add hfair n
+    obtain ⟨N, -, hz⟩ := eventually_zero_of_seq hI' hdec' hA' hen' hfair' 0
+    exact ⟨n + N, Nat.le_add_right n N, hgoal _ hz⟩
 
 /-! ## Compositionality for interleaving
 

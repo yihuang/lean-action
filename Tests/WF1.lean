@@ -135,4 +135,46 @@ theorem count_wf1_seq (b : Behavior Nat)
       · exact Or.inr (by omega))
     (by intro s hs hq; subst hs; exact ⟨3, rfl⟩)
 
+/-! ## `LeadsTo.cancel` -/
+
+/-- Cancellation: with a disjunctive target, once the second branch is reachable
+the goal collapses. (This is a different split from the `by_cases` inside the
+fairness rules — see the docstring of `LeadsTo.cancel`.) -/
+theorem cancel_demo (b : Behavior Nat)
+    (h : LeadsTo (fun _ => True) (fun n => n = 0 ∨ n = 2) b)
+    (h' : LeadsTo (fun n => n = 2) (fun n => n = 0) b) :
+    LeadsTo (fun _ => True) (fun n => n = 0) b :=
+  LeadsTo.cancel h h'
+
+/-! ## `leadsTo_of_rank_region`: the fused rank rule, no call-site `by_cases` -/
+
+/-- A stuttering-free one-step system: `n ↦ n + 1`. -/
+def Tick : Action Nat := update (· + 1)
+def TickM : Module Nat := ⟨fun _ => true, Tick⟩
+def tickRank (n : Nat) : Nat := 2 - n
+
+/-- The fused rule on a *stuttering-free* system (the companion of `count_wf1`,
+which is about a progress action that may stutter): the goal-or-stay split is
+carried by the stepwise stability `hstab`, and the `by_cases` stays inside the
+library rule. -/
+theorem tick_reaches (b : Behavior Nat) (hbeh : IsBehavior TickM b)
+    (hfair : WeakFair Tick b) : LeadsTo (fun _ => True) (fun n => n ≥ 2) b :=
+  leadsTo_of_rank_region (T := TickM.next) (A := Tick) (P := fun _ => True)
+    (Q := fun n => n ≥ 2) (I := fun _ => True) (μ := tickRank) hbeh hfair
+    (by
+      intro s s' _ hq h
+      simp only [TickM, Tick, rel_update] at h
+      rw [h]; simp only [true_and]; omega)
+    (by intro s _ _ _; trivial)
+    (by
+      intro s s' _ hpos h
+      simp only [TickM, Tick, rel_update] at h
+      rw [h]; simp only [tickRank] at hpos ⊢; omega)
+    (by
+      intro s _ hpos s' h
+      simp only [Tick, rel_update] at h
+      rw [h]; simp only [tickRank] at hpos ⊢; omega)
+    (by intro s _ _; exact ⟨s + 1, rfl⟩)
+    (by intro s hz; simp only [tickRank] at hz; omega)
+
 end Tests.WF1

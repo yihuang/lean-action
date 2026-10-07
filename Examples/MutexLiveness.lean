@@ -40,13 +40,13 @@ def Region (s : St) : Prop := s.pc1 = 1 ∧ s.turn = 1 ∧ s.pc2 ≤ 1
 def rank (s : St) : Nat := if s.pc1 = 2 then 0 else 1
 
 theorem rank_le_one (s : St) : rank s ≤ 1 := by
-  by_cases h : s.pc1 = 2 <;> simp [rank, h]
+  unfold rank; split <;> omega
 
 theorem rank_eq_zero_iff {s : St} : rank s = 0 ↔ s.pc1 = 2 := by
-  by_cases h : s.pc1 = 2 <;> simp [rank, h]
+  unfold rank; split <;> simp_all
 
 theorem rank_pos_iff {s : St} : rank s > 0 ↔ s.pc1 ≠ 2 := by
-  by_cases h : s.pc1 = 2 <;> simp [rank, h]
+  unfold rank; split <;> simp_all
 
 /-! ## The region is stable until the goal is reached -/
 
@@ -82,58 +82,11 @@ theorem region_until_goal (b : Behavior St) (hbeh : IsBehavior M b) (h0 : Region
     (fun s s' hs h => region_steps2 hs h)
     h0
 
-/-! ## Liveness of process 1 -/
+/-! ## The stepwise region obligations (shared by both liveness routes)
 
-/-- **Liveness.** From the region, weak fairness for `enter1` makes process 1
-enter the critical section. -/
-theorem eventually_enter1 (b : Behavior St) (hbeh : IsBehavior M b) (h0 : Region (b 0))
-    (hfair : WeakFair enter1 b) : ∃ N, (b N).pc1 = 2 := by
-  by_cases hgoal : ∃ N, (b N).pc1 = 2
-  · exact hgoal
-  · -- the critical section is never entered, so the region is maintained forever
-    have hne : ∀ j, (b j).pc1 ≠ 2 := fun j hj => hgoal ⟨j, hj⟩
-    have hI : ∀ n, rank (b n) > 0 → Region (b n) := fun n _ =>
-      region_until_goal b hbeh h0 n fun j _ => hne j
-    -- no step increases the rank (the rank is at most one)
-    have hdec : ∀ s s', Region s → rank s > 0 → rel M.next s s' → rank s' ≤ rank s := by
-      intro s s' _ hpos _
-      have hs : rank s = 1 := by have := rank_le_one s; omega
-      have hs' : rank s' ≤ 1 := rank_le_one s'
-      omega
-    -- `enter1` strictly decreases the rank inside the region
-    have hA : ∀ s, Region s → rank s > 0 → ∀ s', rel enter1 s s' → rank s' < rank s := by
-      intro s hs hpos s' hstep
-      have hs1 : rank s = 1 := by have := rank_le_one s; omega
-      have hpc : s'.pc1 = 2 := by
-        simp only [Region] at hs
-        simp only [enter1] at hstep
-        action_simp
-        grind
-      rw [rank_eq_zero_iff.mpr hpc, hs1]
-      omega
-    -- and it is enabled inside the region
-    have henabled : ∀ s, Region s → rank s > 0 → Enabled enter1 s := by
-      intro s hs _
-      simp only [Region] at hs
-      simpa [enter1] using And.intro hs.1 hs.2.1
-    obtain ⟨N, -, hz⟩ := eventually_zero_of_weakFair_inv (M := M) (A := enter1)
-      (μ := rank) (I := Region) hbeh hI hdec hA henabled hfair 0
-    exact absurd (rank_eq_zero_iff.mp hz) (hne N)
-
-/-- The `LeadsTo` form: at any time at which process 1 is waiting with the turn,
-it eventually enters the critical section. -/
-theorem leadsTo_enter1 (b : Behavior St) (hbeh : IsBehavior M b)
-    (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b :=
-  LeadsTo.of_shift fun n hn =>
-    eventually_enter1 (fun k => b (n + k)) (isBehavior_add hbeh n)
-      (by simpa using hn) (weakFair_add hfair n)
-
-/-! ## The same `LeadsTo`, via the WF1 rule
-
-`leadsTo_of_wf1` needs no rank at all: three one-step obligations (progress,
-environment, enabledness) replace `eventually_zero_of_weakFair_inv`. Both routes
-prove the same conclusion; the rank route also carries the `μ`/region machinery
-that the *leave* direction below needs. -/
+`region_steps1`/`region_steps2` are one-step facts. WF1's shape packages them as
+"every `M.next` step either reaches the goal or keeps `Region ∧ ¬goal`", which is
+exactly the hypothesis the fused rank rule `leadsTo_of_rank_region` also needs. -/
 
 /-- Progress: an `enter1` step from the region reaches the goal. -/
 theorem wf1_prog : ∀ (s s' : St), Region s → ¬ s.pc1 = 2 → rel enter1 s s' → s'.pc1 = 2 := by
@@ -166,6 +119,51 @@ theorem wf1_enabled : ∀ (s : St), Region s → ¬ s.pc1 = 2 → Enabled enter1
   simp only [Region] at hs
   simpa [enter1] using And.intro hs.1 hs.2.1
 
+/-! ## Liveness of process 1 -/
+
+/-- **Liveness, rank route.** A direct instance of the library's fused rule
+`leadsTo_of_rank_region`: `wf1_env` — the *stepwise* stability of
+`Region ∧ ¬goal` — is shared with the WF1 route below, and the manual
+`by_cases`/contradiction wrapper is gone (the library discharges the prefix
+induction once). `region_until_goal` above is the explicit
+`relyGuarantee_until` form of the same prefix fact. -/
+theorem leadsTo_enter1 (b : Behavior St) (hbeh : IsBehavior M b)
+    (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b :=
+  leadsTo_of_rank_region (T := M.next) hbeh hfair wf1_env
+    (hreg := fun s hs _ _ => hs)
+    (hdec := by
+      intro s s' _ hpos _
+      have hs : rank s = 1 := by have := rank_le_one s; omega
+      have hs' : rank s' ≤ 1 := rank_le_one s'
+      omega)
+    (hprog := by
+      intro s hs hpos s' hstep
+      have hs1 : rank s = 1 := by have := rank_le_one s; omega
+      have hpc : s'.pc1 = 2 := by
+        simp only [Region] at hs
+        simp only [enter1] at hstep
+        action_simp
+        grind
+      rw [rank_eq_zero_iff.mpr hpc, hs1]
+      omega)
+    (henab := by
+      intro s hs _
+      simp only [Region] at hs
+      simpa [enter1] using And.intro hs.1 hs.2.1)
+    (hgoal := fun s hz => rank_eq_zero_iff.mp hz)
+
+/-- The `Eventually` form: from the region, process 1 reaches the critical
+section. -/
+theorem eventually_enter1 (b : Behavior St) (hbeh : IsBehavior M b) (h0 : Region (b 0))
+    (hfair : WeakFair enter1 b) : ∃ N, (b N).pc1 = 2 :=
+  eventually_of_leadsTo (leadsTo_enter1 b hbeh hfair) h0
+
+/-! ## The same `LeadsTo`, via the WF1 rule
+
+The same three obligations go straight into `leadsTo_of_wf1` — no measure, no
+region machinery. The rank route above additionally needed `rank`/`hdec`/`hprog`;
+this one needs none. -/
+
 /-- **The WF1 route to mutex liveness.** Same conclusion as `leadsTo_enter1`, but
 the proof is three interface lemmas plus the rule — no rank, no prefix induction,
 no contradiction wrapper. -/
@@ -189,10 +187,10 @@ holding the turn. -/
 def InCS (s : St) : Prop := s.pc1 = 2 ∧ s.turn = 1
 
 theorem csRank_le_one (s : St) : csRank s ≤ 1 := by
-  by_cases h : s.pc1 = 2 <;> simp [csRank, h]
+  unfold csRank; split <;> omega
 
 theorem csRank_pos_iff {s : St} : csRank s > 0 ↔ s.pc1 = 2 := by
-  by_cases h : s.pc1 = 2 <;> simp [csRank, h]
+  unfold csRank; split <;> simp_all
 
 /-- **Liveness of leaving.** From any state in which process 1 is in the critical
 section, weak fairness for `exit1` eventually takes it out. -/
@@ -219,10 +217,7 @@ theorem leadsTo_exit1 (b : Behavior St) (hbeh : IsBehavior M b)
       simp only [exit1] at hstep
       action_simp
       grind
-    have hs' : csRank s' = 0 := by
-      by_cases h : s'.pc1 = 2
-      · exact absurd h hpc
-      · simp [csRank, h]
+    have hs' : csRank s' = 0 := by simp [csRank, hpc]
     omega
   have henabled : ∀ s, InCS s → csRank s > 0 → Enabled exit1 s := by
     intro s hs _
