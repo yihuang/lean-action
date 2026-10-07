@@ -369,9 +369,21 @@ The two stability obligations mention only the **interfaces** `R₁`/`R₂`, nev
 other component's code — that is the payoff (modularity: the other component can be
 re-implemented as long as it still satisfies the interface, and this component's
 proof does not change). For **state invariants** what it buys is modularity rather
-than shorter proofs (see the infeasibility argument in §11.9); what genuinely
-changes the shape of a proof is a **prefix property** ("a region holds until the
-goal is reached"):
+than shorter proofs (see the infeasibility argument in §11.9) — in fact the rely is
+then *determined* (`derivedRely I := fun s s' => I s → I s'`), so it need not appear
+at the call site at all:
+
+```lean
+theorem compatible_of_guarantees (g₁ : ∀ s s', I s → rel A₁ s s' → I s')
+    (g₂ : …) : Compatible I A₁ A₂ (derivedRely I) (derivedRely I)
+
+theorem preserves_of_guarantees (g₁ : …) (g₂ : …) : Preserves (A₁ <|> A₂) I
+  -- = Preserves.orElse composed with the packaging above
+```
+
+What genuinely changes the shape of a proof is a **prefix property** ("a region
+holds until the goal is reached"), where the environment obligation is about a
+region rather than an invariant:
 
 ```lean
 theorem relyGuarantee_until (hbeh : ∀ n, rel (A₁ <|> A₂) (b n) (b (n+1)))
@@ -392,8 +404,13 @@ and that each projection advances **exactly** (unlike interleaving, which may
 stutter). Note that lock-step composition requires both components to be able to
 move.
 
-**Automation**: `disjoint_auto` closes `Disjoint` goals for structure-field views in
-one tactic (pointwise unfolding + `cases` + `rfl`).
+**Automation**: `disjoint_auto` closes `Disjoint` goals for structure-field views
+in one tactic, through two channels: a **certificate** emitted by the deriver
+(`T.disjoint_f_g`, registered via the naming convention or the `@[field_disjoint]`
+attribute) and a **semantic fallback** (`cases; rfl`, without casing the values).
+Disjointness also *composes* (`Disjoint.comp_of_disjoint` / `comp_left` /
+`comp_right`), which is how nested footprints are proved from a base case, and the
+array-like (`upd`) case is handled conditionally by `DisjointUnder`.
 
 ## 6. The proof layer: a single induction engine
 
@@ -542,6 +559,15 @@ Implemented (`LeanAction/Liveness.lean`), in two layers:
   only while `μ > 0` — variants for shared-memory protocols are usually **not
   globally monotone** (leaving the critical section sends the variant back up), and
   this relaxation is a prerequisite for such proofs.
+* **leads-to algebra and WF1**: `LeadsTo.refl`/`mono`/`trans`/`or`/`cancel`, the
+time-shift lemmas (`isBehavior_add`/`weakFair_add`, `LeadsTo.of_shift`) that
+remove the "shift the behavior, transfer fairness" boilerplate from every
+packaging proof, and the WF1 rule: `leadsTo_of_wf1_seq` works for an **arbitrary
+step relation** (the module-level `leadsTo_of_wf1` is the `T = M.next` case), so
+WF1 applies to the *projection* of an interleaved behavior just as
+`eventually_zero_of_seq` does — the structural counterpart of the rank layer.
+`leadsTo_of_wf1(_seq)_nonStutter` is the TLA `⟨A⟩` (non-stuttering progress)
+version, with `nonStutter A` the `A`-steps that change the state.
 * **termination of loops**: `loop_can_exit` turns a decreasing variant into the
   "there exists a terminating run" half of termination for `while`; combined with
   `Hoare.loop` (partial correctness) this gives **total correctness** of a loop (see
@@ -570,18 +596,29 @@ induction, because it is not globally preserved).
 
 ### 9.3 Other
 
-* **Lens derivation**: a `deriving` handler or a `lens!` macro (see §5.1).
+* **Lens/View derivation**: the `deriving ViewFields, LensFields` handlers and the
+  `view_defs`/`lens_defs` commands exist (§5.1), and now also emit one `Disjoint`
+  certificate per pair of sibling fields. Remaining: an ergonomic `lens!`-style
+  macro, and the deriving handler still declines *parameterized* structures (the
+  commands take the type as a term for those).
 * **Parallel semantics**: four layers exist — product state (`interleave`, §5.2),
   shared state with disjoint footprints (`ViewModule.parallel`),
   **rely/guarantee** (`Compatible` + `Preserves.orElse_of_compatible`, used when
   footprints overlap, as in `Examples/RelyGuarantee` and `Examples/MutexLiveness`),
   and **synchronous** (`ViewModule.sync`). Still missing: (a) **automatic discovery
-  of relies** (today they are written by hand, usually after some trial and error);
+  of relies** — the safety fragment no longer needs one: `derivedRely`/
+  `preserves_of_guarantees` compose the two guarantee lemmas directly ("rely as
+  output"), and explicit `Rel`s remain only for the residual tier (value-constraint
+  interfaces like `s'.v ≤ s.v`); what is still missing is a *liveness* RG rule,
+  where the environment obligation is about a variant rather than an invariant;
   (b) **systematic support for non-state relies** (every rely here is a
   `σ → σ → Prop`; how to generate and validate a suitable rely from code has no
   methodology yet); (c) **liveness for synchronous composition** (only safety so
-  far); (d) footprint inference only reaches the pointwise `cases`+`rfl` case
-  (`disjoint_auto`); complex views still need hand-written proofs.
+  far); (d) footprint inference is complete for **flat** structures
+  (deriver certificates + `disjoint_auto`) and now composes (`Disjoint.comp_of_disjoint`
+  / `comp_left` / `comp_right`) and handles the array-like case conditionally
+  (`upd`/`upd_noteq`/`upd_comm`, `DisjointUnder`); arbitrary hand-written
+  non-pointwise views still need hand-written proofs.
 * **Invariant synthesis**: `inv` must be supplied by hand today; the shape of
   `Module.safe_of_invariant` is already suitable for hooking up IC3/Houdini-style
   invariant guessing.
@@ -721,6 +758,23 @@ descends through the two projections" (`reach_interleave_fst/snd`).
   `rel A (b n) (b (n+1))` (the step satisfies `A`'s relation), so for a module
   `A <|> B`, "`A` is always enabled but the environment always takes `B`" is exactly
   a violation of weak fairness — which is why `stuck` can be refuted.
+* **WF1: the TLA deviation, and the module/sequence split.** Two design points
+  surfaced with the WF1 rule. (1) TLA's WF1 is about `⟨A⟩_v = A ∧ v' ≠ v`; the first
+  version here required *every* `A`-step (stuttering included) to reach the goal,
+  which is unprovable for a progress action like `guard P <|> skip`. The fix is
+  `nonStutter A` (the `A`-steps that change the state), with fairness taken for it:
+  `leadsTo_of_wf1_nonStutter` (see `Tests/WF1.count_wf1`). (2) The rule first lived
+  only at the module level (`IsBehavior M b` + `rel M.next`), so it could not be
+  used on a *projection* of an interleaved behavior, where the other component's
+  steps appear as stuttering. Lifting it to an arbitrary step relation `T`
+  (`leadsTo_of_wf1_seq`, with `leadsTo_of_wf1 := … (T := M.next)`) is exactly the move
+  `eventually_zero_of_seq` already made for the rank layer. The lesson is that
+  **the rule and the engine should be at the same layer**.
+* **`LeadsTo` needs its algebra**: `LeadsTo.cancel` (`P ⇝ Q ∨ R` together with
+  `R ⇝ Q` gives `P ⇝ Q`), the shift lemmas `isBehavior_add`/`weakFair_add`, and the
+  introduction principle `LeadsTo.of_shift` are each tiny, but without them every
+  packaging proof (e.g. `Examples/MutexLiveness.leadsTo_enter1`) re-implements the
+  `∀ n, ∃ m ≥ n` bookkeeping and the behavior-shift by hand.
 
 ### 11.5 Lessons from liveness of a shared-memory protocol
 
@@ -878,6 +932,25 @@ difference:
   the value of the safety example is that *obligations mention only interfaces*
   (in `Examples/RelyGuarantee` each direction looks only at the other component),
   not the proof length.
+* **Resolution: "rely as output".** The refactor turns the previous point into a
+  theorem: for the safety fragment the rely is *determined* — `derivedRely I` is
+  the only candidate that can work — so it should not be a parameter at all.
+  `compatible_of_guarantees` makes `Compatible` against it definitional, and
+  `preserves_of_guarantees` composes the two guarantee lemmas directly (it is
+  `Preserves.orElse` plus that packaging). The earlier infeasibility argument, in
+  other words, is not a reason to avoid R/G; it is the *explanation of why
+  `derivedRely I` is the complete default*, and the explicit `Rel` layer is left for
+  the residual tier (`s'.v ≤ s.v`-style value constraints) where no single
+  predicate `I` suffices.
+* **Certificate lookup: naming convention vs. attribute.** `disjoint_auto` finds the
+  deriver's certificates by the `T.disjoint_f_g` naming convention. That is
+  self-consistent (a rename regenerates both), but for *hand-written* certificates
+  the convention is a silent-coupling hazard: a miss quietly falls through to the
+  semantic channel, which succeeds on the easy goals and fails — with an unrelated
+  message — on the `Nat`-valued ones. The fix is the `@[field_disjoint]` attribute
+  (a persisted registry the tactic also consults) plus a
+  `trace[LeanAction.disjoint_auto]` line on fallback: the failure mode is turned
+  from silent into observable.
 * **`sync` hit the same defeq trap again**: `rel`'s equality is `z = (Done.mk, x)`
   while one wants to say `s' = x`, and the two need `Prod.mk.injEq`, not defeq. That
   is the third time (`rel_focusView`, `rel_lift`, now `rel_sync`), and the fix is the

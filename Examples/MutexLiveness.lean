@@ -123,21 +123,10 @@ theorem eventually_enter1 (b : Behavior St) (hbeh : IsBehavior M b) (h0 : Region
 /-- The `LeadsTo` form: at any time at which process 1 is waiting with the turn,
 it eventually enters the critical section. -/
 theorem leadsTo_enter1 (b : Behavior St) (hbeh : IsBehavior M b)
-    (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b := by
-  intro n hn
-  have hbeh' : IsBehavior M fun k => b (n + k) := fun k => hbeh (n + k)
-  have hfair' : WeakFair enter1 fun k => b (n + k) := by
-    intro k hen
-    have hen' : ∀ m, n + k ≤ m → ∃ s', rel enter1 (b m) s' := by
-      intro m hm
-      have hn_le : n ≤ m := by omega
-      simpa [Nat.add_sub_of_le hn_le] using hen (m - n) (by omega)
-    obtain ⟨M, hM, hstep⟩ := hfair (n + k) hen'
-    have h1 : n + (M - n) = M := by omega
-    have h2 : n + (M - n + 1) = M + 1 := by omega
-    exact ⟨M - n, by omega, by simpa [TakesStep, h1, h2] using hstep⟩
-  obtain ⟨N, hN⟩ := eventually_enter1 (fun k => b (n + k)) hbeh' (by simpa using hn) hfair'
-  exact ⟨n + N, Nat.le_add_right n N, hN⟩
+    (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b :=
+  LeadsTo.of_shift fun n hn =>
+    eventually_enter1 (fun k => b (n + k)) (isBehavior_add hbeh n)
+      (by simpa using hn) (weakFair_add hfair n)
 
 /-! ## The same `LeadsTo`, via the WF1 rule
 

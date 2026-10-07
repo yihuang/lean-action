@@ -95,4 +95,22 @@ def yView : View Two Nat := ⟨fun s => s.y, fun s v => { s with y := v }⟩
 theorem two_disjoint : Disjoint xView yView := by
   disjoint_auto
 
+/-! ## Test 6: explicit `@[field_disjoint]` registration
+
+A hand-written certificate whose name is *not* `T.disjoint_f_g` is found through
+the registry, not the naming convention. -/
+
+structure Manual where
+  p : Nat
+  q : Bool
+
+def Manual.pView : View Manual Nat := ⟨fun s => s.p, fun s v => { s with p := v }⟩
+def Manual.qView : View Manual Bool := ⟨fun s => s.q, fun s v => { s with q := v }⟩
+
+@[field_disjoint] theorem manual_cert : Disjoint Manual.pView Manual.qView :=
+  ⟨by intro s a; cases s; rfl, by intro s b; cases s; rfl, by intro s a b; cases s; rfl⟩
+
+theorem manual_disjoint : Disjoint Manual.pView Manual.qView := by
+  disjoint_auto
+
 end Tests.Certificates

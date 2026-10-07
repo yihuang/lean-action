@@ -183,6 +183,12 @@ def set (v : σ) : Action σ := fun _ z => z = (Done.mk, v)
 /-- Perform any transition permitted by the relation `R`. -/
 def nondet (R : Rel σ σ) : Action σ := fun s z => R s z.2
 
+/-- The *non-stuttering* part of `A`: the `A`-steps that actually change the
+state. This is TLA's `⟨A⟩_v` with the whole state as the variable, written
+`⟨A⟩`. Fairness of `⟨A⟩` (not of `A`) is what the stuttering-safe WF1 rule
+consumes. -/
+def nonStutter (A : Action σ) : Action σ := fun s z => rel A s z.2 ∧ z.2 ≠ s
+
 /-- Angelic choice: `A <|> B` may behave as `A` or as `B`. -/
 def choice (A B : Action σ) : Action σ := fun s z => A s z ∨ B s z
 
@@ -244,6 +250,9 @@ first-order goal about states. -/
 
 @[simp] theorem rel_nondet {R : Rel σ σ} {s s' : σ} :
     rel (nondet R : Action σ) s s' ↔ R s s' := Iff.rfl
+
+@[simp] theorem rel_nonStutter {A : Action σ} {s s' : σ} :
+    rel (nonStutter A) s s' ↔ rel A s s' ∧ s' ≠ s := Iff.rfl
 
 /-- Monadic `modify` seen as a transition relation. -/
 @[simp] theorem rel_modify {f : σ → σ} {s s' : σ} :
@@ -362,6 +371,10 @@ def Enabled (A : Action σ) : Nondet σ := fun s => ∃ s', rel A s s'
 
 @[simp] theorem enabled_nondet {R : Rel σ σ} {s : σ} :
     Enabled (nondet R : Action σ) s ↔ ∃ s', R s s' := by
+  simp [Enabled]
+
+@[simp] theorem enabled_nonStutter {A : Action σ} {s : σ} :
+    Enabled (nonStutter A) s ↔ ∃ s', rel A s s' ∧ s' ≠ s := by
   simp [Enabled]
 
 @[simp] theorem enabled_orElse {A B : Action σ} {s : σ} :

@@ -71,4 +71,68 @@ theorem leadsTo_enter1_wf1 (b : Behavior St) (hbeh : IsBehavior M b)
   leadsTo_of_wf1 (M := M) (A := enter1) (P := Region) (Q := fun s => s.pc1 = 2)
     hbeh hfair wf1_prog wf1_env wf1_enabled
 
+/-! ## `⟨A⟩`-WF1 for a stuttering progress action
+
+Plain WF1 requires *every* `A`-step to reach `Q`; if `A` may stutter (here:
+bump **or** skip) that obligation is false on the `skip` branch.
+`leadsTo_of_wf1_nonStutter` takes fairness for `nonStutter A` instead. -/
+
+def bumpOrSkip : Action Nat := update (· + 1) <|> skip
+
+def CountM : Module Nat := ⟨fun _ => true, bumpOrSkip⟩
+
+theorem count_prog : ∀ s s', s = 2 → ¬ s ≥ 3 → rel bumpOrSkip s s' → s' ≠ s → s' ≥ 3 := by
+  intro s s' hs hq h hne
+  subst hs
+  simp only [bumpOrSkip] at h
+  rw [rel_orElse] at h
+  rcases h with h | h
+  · simp only [rel_update] at h; rw [h]; omega
+  · simp only [rel_skip] at h; exact absurd h hne
+
+theorem count_env : ∀ s s', s = 2 → ¬ s ≥ 3 → rel CountM.next s s' →
+    (s' = 2 ∧ ¬ s' ≥ 3) ∨ s' ≥ 3 := by
+  intro s s' hs hq h
+  subst hs
+  simp only [CountM, bumpOrSkip] at h
+  rw [rel_orElse] at h
+  rcases h with h | h
+  · simp only [rel_update] at h; rw [h]; exact Or.inr (by omega)
+  · simp only [rel_skip] at h; exact Or.inl ⟨h, by omega⟩
+
+theorem count_enabled : ∀ s, s = 2 → ¬ s ≥ 3 → Enabled (nonStutter bumpOrSkip) s := by
+  intro s hs hq
+  subst hs
+  refine ⟨3, ?_, by omega⟩
+  simp only [bumpOrSkip]
+  exact Or.inl rfl
+
+theorem count_wf1 (b : Behavior Nat) (hbeh : IsBehavior CountM b)
+    (hfair : WeakFair (nonStutter bumpOrSkip) b) :
+    LeadsTo (fun n => n = 2) (fun n => n ≥ 3) b :=
+  leadsTo_of_wf1_nonStutter (M := CountM) (A := bumpOrSkip) hbeh hfair
+    count_prog count_env count_enabled
+
+/-! ## `leadsTo_of_wf1_seq`: an arbitrary step relation
+
+The sequence-level rule mentions no `Module`; `T` is just a relation, which is
+the shape a *projected* interleaved behavior has. -/
+
+theorem count_wf1_seq (b : Behavior Nat)
+    (hstep : ∀ n, b (n + 1) = b n ∨ b (n + 1) = b n + 1)
+    (hfair : WeakFair (update (· + 1)) b) :
+    LeadsTo (fun n => n = 2) (fun n => n ≥ 3) b :=
+  leadsTo_of_wf1_seq (T := ofRel fun s s' => s' = s ∨ s' = s + 1)
+    (A := update (· + 1))
+    (fun n => by simpa [rel_ofRel] using hstep n) hfair
+    (by intro s s' hs hq h; subst hs; simp only [rel_update] at h; rw [h]; omega)
+    (by
+      intro s s' hs hq h
+      subst hs
+      simp only [rel_ofRel] at h
+      rcases h with h | h
+      · exact Or.inl ⟨h, by omega⟩
+      · exact Or.inr (by omega))
+    (by intro s hs hq; subst hs; exact ⟨3, rfl⟩)
+
 end Tests.WF1

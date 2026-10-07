@@ -104,9 +104,8 @@ theorem bump_guarantee : ∀ s s', I s → rel bump s s' → I s' := by
 /-- Against the derived relies, `Compatible` is definitional — the only content
 is the two guarantee lemmas. -/
 theorem compatible_derived :
-    Compatible I dec bump (derivedRely I) (derivedRely I) where
-  left s s' hi h := fun _ => dec_guarantee s s' hi h
-  right s s' hi h := fun _ => bump_guarantee s s' hi h
+    Compatible I dec bump (derivedRely I) (derivedRely I) :=
+  compatible_of_guarantees dec_guarantee bump_guarantee
 
 /-- **The new shortcut**: the same `next_preserves`, with no explicit `Rel` at
 the call site. The refined interfaces remain available (above) for the residual

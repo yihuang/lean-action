@@ -122,6 +122,35 @@ theorem LeadsTo.or {P Q R : Nondet σ} {b : Behavior σ}
   · exact hP n hn
   · exact hQ n hn
 
+/-- **Cancellation.** If from `P` we reach `Q ∨ R`, and from `R` we reach `Q`,
+then from `P` we already reach `Q`. This is the lemma behind the manual
+`by_cases` in fairness proofs: split on whether the goal is reached, and let the
+fairness argument handle the other branch. -/
+theorem LeadsTo.cancel {P Q R : Nondet σ} {b : Behavior σ}
+    (h₁ : LeadsTo P (fun s => Q s ∨ R s) b) (h₂ : LeadsTo R Q b) : LeadsTo P Q b := by
+  intro n hn
+  obtain ⟨m, hnm, hm | hm⟩ := h₁ n hn
+  · exact ⟨m, hnm, hm⟩
+  · obtain ⟨k, hmk, hk⟩ := h₂ m hm
+    exact ⟨k, Nat.le_trans hnm hmk, hk⟩
+
+/-- `LeadsTo` is unchanged by shifting the behavior in time. -/
+theorem LeadsTo.shift {P Q : Nondet σ} {b : Behavior σ} (h : LeadsTo P Q b) (n : Nat) :
+    LeadsTo P Q (fun k => b (n + k)) := by
+  intro m hm
+  obtain ⟨k, hmk, hk⟩ := h (n + m) hm
+  refine ⟨k - n, by omega, ?_⟩
+  have : n + (k - n) = k := by omega
+  simpa [this] using hk
+
+/-- Introduction principle: `LeadsTo` only has to be proved on the shifted
+behavior, where `Eventually` replaces the `∃ m, n ≤ m` quantifier shape. -/
+theorem LeadsTo.of_shift {P Q : Nondet σ} {b : Behavior σ}
+    (h : ∀ n, P (b n) → Eventually Q (fun k => b (n + k))) : LeadsTo P Q b := by
+  intro n hn
+  obtain ⟨m, hm⟩ := h n hn
+  exact ⟨n + m, Nat.le_add_right n m, hm⟩
+
 /-! ## Safety as a temporal property -/
 
 /-- Every behavior of a module satisfies every preserved predicate at all times. -/
@@ -170,20 +199,38 @@ theorem weakFair_enabled {A : Action σ} {b : Behavior σ} :
     WeakFair A b ↔
     ∀ n, (∀ m, n ≤ m → Enabled A (b m)) → ∃ m, n ≤ m ∧ TakesStep A b m := Iff.rfl
 
-/-- **WF1.** If, from `P ∧ ¬Q`,
-* every step of `A` reaches `Q` (`hprog`),
-* every step of the module either reaches `Q` or keeps `P ∧ ¬Q` (`henv`),
-* `A` stays enabled (`henabled`),
-then weak fairness for `A` yields `LeadsTo P Q`.
+/-- Shifting a behavior in time preserves being a behavior. -/
+theorem isBehavior_add {M : Module σ} {b : Behavior σ} (h : IsBehavior M b) (n : Nat) :
+    IsBehavior M (fun k => b (n + k)) := fun k => by
+  simpa [Nat.add_assoc] using h (n + k)
 
-This is the TLA+ WF1 rule with the invariant specialized to `P ∧ ¬Q` (and no
-primed variables: `P s'`, `Q s'` play the primed roles). Unlike the rank
-theorems below it needs no measure at all; the three obligations are
-one-step facts that the `action_simp; grind` pipeline discharges. -/
-theorem leadsTo_of_wf1 {M : Module σ} {A : Action σ} {P Q : Nondet σ} {b : Behavior σ}
-    (hbeh : IsBehavior M b) (hfair : WeakFair A b)
+/-- Shifting a behavior in time preserves weak fairness. Together with
+`isBehavior_add` this removes the boilerplate every `LeadsTo` packaging proof
+otherwise repeats. -/
+theorem weakFair_add {A : Action σ} {b : Behavior σ} (h : WeakFair A b) (n : Nat) :
+    WeakFair A (fun k => b (n + k)) := by
+  intro m hen
+  have hen' : ∀ j, n + m ≤ j → ∃ s', rel A (b j) s' := by
+    intro j hj
+    have hmn : m ≤ j - n := by omega
+    have hj' : n + (j - n) = j := by omega
+    simpa [hj'] using hen (j - n) hmn
+  obtain ⟨j, hj, hstep⟩ := h (n + m) hen'
+  refine ⟨j - n, by omega, ?_⟩
+  have h1 : n + (j - n) = j := by omega
+  have h2 : n + (j - n + 1) = j + 1 := by omega
+  simpa [TakesStep, h1, h2] using hstep
+
+/-- **WF1, with an arbitrary step relation.** `T` is the environment's step
+relation; the rule touches the environment only through `henv`, so nothing forces
+`T = M.next`. Keeping `T` abstract is what makes WF1 applicable to the
+*projection* of an interleaved behavior, whose steps are not the component's
+`M.next` (`leadsTo_of_wf1` below is the `T = M.next` case, exactly as
+`eventually_zero_of_weakFair_inv` is derived from `eventually_zero_of_seq`). -/
+theorem leadsTo_of_wf1_seq {T A : Action σ} {P Q : Nondet σ} {b : Behavior σ}
+    (hbeh : ∀ n, rel T (b n) (b (n + 1))) (hfair : WeakFair A b)
     (hprog : ∀ s s', P s → ¬ Q s → rel A s s' → Q s')
-    (henv : ∀ s s', P s → ¬ Q s → rel M.next s s' → (P s' ∧ ¬ Q s') ∨ Q s')
+    (henv : ∀ s s', P s → ¬ Q s → rel T s s' → (P s' ∧ ¬ Q s') ∨ Q s')
     (henabled : ∀ s, P s → ¬ Q s → Enabled A s) :
     LeadsTo P Q b := by
   intro n hn
@@ -205,6 +252,50 @@ theorem leadsTo_of_wf1 {M : Module σ} {A : Action σ} {P Q : Nondet σ} {b : Be
     obtain ⟨m, hnm, htaken⟩ := hfair n hen
     have hQ := hprog _ _ (hstable m hnm).1 (hstable m hnm).2 htaken
     exact absurd hQ (hno _ (Nat.le_succ_of_le hnm))
+
+/-- **WF1.** The module-level rule (`leadsTo_of_wf1_seq` at `T = M.next`). If,
+from `P ∧ ¬Q`:
+* every step of `A` reaches `Q` (`hprog`),
+* every step of the module either reaches `Q` or keeps `P ∧ ¬Q` (`henv`),
+* `A` stays enabled (`henabled`),
+then weak fairness for `A` yields `LeadsTo P Q`. This is the TLA+ WF1 rule with
+the invariant specialized to `P ∧ ¬Q` (no primed variables: `P s'`, `Q s'` play
+the primed roles), and it needs no measure at all.
+
+NB: `hprog` is on *all* `A`-steps, stuttering ones included. TLA instead uses
+`⟨A⟩_v`, where stuttering steps do not count; `leadsTo_of_wf1_nonStutter` below
+is that version (fairness of `nonStutter A`). -/
+theorem leadsTo_of_wf1 {M : Module σ} {A : Action σ} {P Q : Nondet σ} {b : Behavior σ}
+    (hbeh : IsBehavior M b) (hfair : WeakFair A b)
+    (hprog : ∀ s s', P s → ¬ Q s → rel A s s' → Q s')
+    (henv : ∀ s s', P s → ¬ Q s → rel M.next s s' → (P s' ∧ ¬ Q s') ∨ Q s')
+    (henabled : ∀ s, P s → ¬ Q s → Enabled A s) :
+    LeadsTo P Q b :=
+  leadsTo_of_wf1_seq (T := M.next) hbeh hfair hprog henv henabled
+
+/-- **WF1 with a stuttering progress action** — TLA's `⟨A⟩` / `⟨A⟩_v` version.
+If `A` may stutter (e.g. `guard P <|> skip`), requiring *every* `A`-step to reach
+`Q` is too strong. Here fairness is required for `nonStutter A`, and `hprog` only
+has to reach `Q` when the state actually changes. -/
+theorem leadsTo_of_wf1_seq_nonStutter {T A : Action σ} {P Q : Nondet σ} {b : Behavior σ}
+    (hbeh : ∀ n, rel T (b n) (b (n + 1))) (hfair : WeakFair (nonStutter A) b)
+    (hprog : ∀ s s', P s → ¬ Q s → rel A s s' → s' ≠ s → Q s')
+    (henv : ∀ s s', P s → ¬ Q s → rel T s s' → (P s' ∧ ¬ Q s') ∨ Q s')
+    (henabled : ∀ s, P s → ¬ Q s → Enabled (nonStutter A) s) :
+    LeadsTo P Q b :=
+  leadsTo_of_wf1_seq (T := T) (A := nonStutter A) hbeh hfair
+    (fun s s' hP hQ h =>
+      hprog s s' hP hQ (rel_nonStutter.mp h).1 (rel_nonStutter.mp h).2)
+    henv henabled
+
+/-- Module-level `⟨A⟩`-WF1 (`leadsTo_of_wf1_seq_nonStutter` at `T = M.next`). -/
+theorem leadsTo_of_wf1_nonStutter {M : Module σ} {A : Action σ} {P Q : Nondet σ}
+    {b : Behavior σ} (hbeh : IsBehavior M b) (hfair : WeakFair (nonStutter A) b)
+    (hprog : ∀ s s', P s → ¬ Q s → rel A s s' → s' ≠ s → Q s')
+    (henv : ∀ s s', P s → ¬ Q s → rel M.next s s' → (P s' ∧ ¬ Q s') ∨ Q s')
+    (henabled : ∀ s, P s → ¬ Q s → Enabled (nonStutter A) s) :
+    LeadsTo P Q b :=
+  leadsTo_of_wf1_seq_nonStutter (T := M.next) hbeh hfair hprog henv henabled
 
 /-! ## Rank arguments -/
 

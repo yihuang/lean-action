@@ -310,6 +310,38 @@ theorem ptr₁_get_eq_of_write (s : PtrTable) (v : Nat) (h : aliasFree s) :
   apply ptrView_disjointUnder.get_eq_of_write h
   simp only [ptrView, upd_same]
 
+/-- A component that only writes its own pointer's slot preserves `aliasFree`. -/
+theorem ptr₁_preserves_aliasFree :
+    Preserves (focusView (ptrView fun s => s.ptr₁) (update (· + 1))) aliasFree := by
+  intro s hs s' hr
+  obtain ⟨a', -, hs'⟩ := rel_focusView.mp hr
+  rw [hs']
+  simpa [aliasFree, ptrView] using hs
+
+theorem ptr₂_preserves_aliasFree :
+    Preserves (focusView (ptrView fun s => s.ptr₂) (update (· + 1))) aliasFree := by
+  intro s hs s' hr
+  obtain ⟨a', -, hs'⟩ := rel_focusView.mp hr
+  rw [hs']
+  simpa [aliasFree, ptrView] using hs
+
+/-- **The combined system is safe.** The interleaving of the two slot-writers
+preserves aliasing freedom (plus the trivial component invariants);
+`parallel_preserves_under` is the step from the two single-step frame lemmas to
+the system theorem. -/
+theorem ptr_safe_under :
+    Preserves (focusView (ptrView fun s => s.ptr₁) (update (· + 1)) <|>
+                focusView (ptrView fun s => s.ptr₂) (update (· + 1)))
+      aliasFree := by
+  have h := parallel_preserves_under (P := aliasFree) ptrView_disjointUnder
+    (update (· + 1)) (update (· + 1))
+    (by intro s a; simp only [ptrView, upd_same])
+    (by intro s a; simp only [ptrView, upd_same])
+    ptr₁_preserves_aliasFree ptr₂_preserves_aliasFree
+    (P₁ := fun _ : Nat => True) (P₂ := fun _ : Nat => True)
+    (by intro s _ s' _; trivial) (by intro s _ s' _; trivial)
+  simpa using h
+
 /-! ## Where the frame assumption fails: the mutex protocol
 
 Both processes of `Examples.Mutex` write `turn`, so no disjointness proof exists,

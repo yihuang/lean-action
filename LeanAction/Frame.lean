@@ -202,6 +202,17 @@ theorem DisjointUnder.get_eq_of_write {P : Nondet σ} {v₁ : View σ α} {v₂ 
   calc v₁.get s' = v₁.get (v₂.set s (v₂.get s')) := congrArg v₁.get hwrite
     _ = v₁.get s := h.set_get s (v₂.get s') hp
 
+/-- The frame reading for a *focused action*: an action taken through `v₁` leaves
+`v₂`'s view unchanged while `P` holds. This is the conditional analogue of
+`Disjoint.get_of_rel`, and the single-step ingredient of
+`parallel_preserves_under` below. -/
+theorem DisjointUnder.get_of_rel {P : Nondet σ} {v₁ : View σ α} {v₂ : View σ β}
+    (h : DisjointUnder P v₁ v₂) {A : Action α} {s s' : σ}
+    (hp : P s) (hr : rel (focusView v₁ A) s s') : v₂.get s' = v₂.get s := by
+  obtain ⟨a', -, hs'⟩ := rel_focusView.mp hr
+  rw [hs']
+  exact h.get_set s a' hp
+
 /-- Packaged as a rely relation: if every `R`-step preserves `P` and stays
 inside `v₂`'s footprint, then `R` is a valid rely for any component reading
 `v₁`. -/
@@ -292,6 +303,39 @@ theorem DisjointUnder.comp_right {P : Nondet σ} {v₁ : View σ α} {v₂ : Vie
       v₂.set (v₁.set s a) (w.set (v₂.get (v₁.set s a)) b)
     rw [h.get_set s a hp]
     exact h.set_set s a (w.set (v₂.get s) b) hp hp'
+
+/-- **Conditional parallel composition.** If the two footprints commute only
+under a condition `P`, and both components preserve `P`, then the interleaving
+preserves `P` together with the two component invariants. This is
+`ViewModule.parallel_preserves` with `Disjoint` weakened to `DisjointUnder` — the
+form the aliasing-freedom case needs to close its safety theorem.
+
+The asymmetry of `DisjointUnder.set_set` (only the `v₂`-intermediate state is
+guarded) is what keeps this free of preservation side conditions on the *other*
+component's intermediate state. -/
+theorem parallel_preserves_under {P : Nondet σ} {v₁ : View σ α} {v₂ : View σ β}
+    (hd : DisjointUnder P v₁ v₂) (A₁ : Action α) (A₂ : Action β)
+    (hget₁ : ∀ s a, v₁.get (v₁.set s a) = a) (hget₂ : ∀ s a, v₂.get (v₂.set s a) = a)
+    (hP₁ : Preserves (focusView v₁ A₁) P) (hP₂ : Preserves (focusView v₂ A₂) P)
+    {P₁ : Nondet α} {P₂ : Nondet β}
+    (h₁ : Preserves A₁ P₁) (h₂ : Preserves A₂ P₂) :
+    Preserves (focusView v₁ A₁ <|> focusView v₂ A₂)
+      (fun s => P s ∧ P₁ (v₁.get s) ∧ P₂ (v₂.get s)) := by
+  intro s hs s' hr
+  rw [rel_orElse] at hr
+  rcases hr with hr | hr
+  · obtain ⟨a', ha', hs'⟩ := rel_focusView.mp hr
+    refine ⟨hP₁ s hs.1 s' hr, ?_, ?_⟩
+    · rw [hs', hget₁ s a']
+      exact h₁ (v₁.get s) hs.2.1 a' ha'
+    · rw [hs', hd.get_set s a' hs.1]
+      exact hs.2.2
+  · obtain ⟨b', hb', hs'⟩ := rel_focusView.mp hr
+    refine ⟨hP₂ s hs.1 s' hr, ?_, ?_⟩
+    · rw [hs', hd.set_get s b' hs.1]
+      exact hs.2.1
+    · rw [hs', hget₂ s b']
+      exact h₂ (v₂.get s) hs.2.2 b' hb'
 
 /-! ## Frame lemmas -/
 
@@ -532,6 +576,16 @@ theorem Preserves.orElse_of_compatible {A₁ A₂ : Action σ} {I : Nondet σ} {
 invariant. Packaging as a relation — not a new concept. -/
 def derivedRely (I : Nondet σ) : Rel σ σ := fun s s' => I s → I s'
 
+/-- Against the *derived* relies, `Compatible` is definitional: the only content
+is the two guarantee lemmas, since `derivedRely I s s'` unfolds to `I s → I s'`.
+This is the packaging `preserves_of_guarantees` is built on. -/
+theorem compatible_of_guarantees {I : Nondet σ} {A₁ A₂ : Action σ}
+    (g₁ : ∀ s s', I s → rel A₁ s s' → I s')
+    (g₂ : ∀ s s', I s → rel A₂ s s' → I s') :
+    Compatible I A₁ A₂ (derivedRely I) (derivedRely I) where
+  left s s' hi h := fun _ => g₁ s s' hi h
+  right s s' hi h := fun _ => g₂ s s' hi h
+
 /-- **Rely as output.** Given each component's guarantee lemma (stated in its
 own vocabulary, locally checkable), `Compatible` with the derived relies is
 definitional and the composition is immediate: no explicit `Rel` parameter
@@ -545,9 +599,13 @@ theorem preserves_of_guarantees {σ : Type u} {I : Nondet σ} {A₁ A₂ : Actio
     (g₂ : ∀ s s', I s → rel A₂ s s' → I s') :
     Preserves (A₁ <|> A₂) I :=
   Preserves.orElse_of_compatible
-    (R₁ := derivedRely I) (R₂ := derivedRely I)
-    ⟨fun s s' hi h => fun _ => g₁ s s' hi h, fun s s' hi h => fun _ => g₂ s s' hi h⟩
+    (compatible_of_guarantees g₁ g₂)
     (fun _ _ hi hr => hr hi) (fun _ _ hi hr => hr hi)
+
+/-! In plain terms this is just `Preserves.orElse` (each component preserves `I`)
+composed with the `derivedRely`/`Compatible` packaging: the two guarantee lemmas
+are the whole proof. The packaging is what makes the rely *disappear from the
+call site* rather than being guessed — the point of the rule. -/
 
 /-- **Prefix stability, relying on the environment.** `I` holds until `G` is
 reached: the component's own steps keep `I` or reach `G`, and the environment's
@@ -651,17 +709,64 @@ Views for structure fields are definitionally pointwise, so their disjointness
 is `cases` plus `rfl`. But `disjoint_auto` has **two channels**:
 
 1. **Certificate lookup**: `deriving ViewFields/LensFields` (and `view_defs` /
-   `lens_defs`) emit one `@[field_disjoint]` theorem per pair of distinct
-   fields at generation time; this channel is a pure lookup combined with
-   `Disjoint.symm`. It covers the flat-structure fragment — everything a
-   flat-state framework (Veil/IVy) can cover — fully automatically, including
-   `Nat`-valued fields where the old search used to get stuck.
+   `lens_defs`) emit one `T.disjoint_f_g` theorem per pair of distinct fields at
+   generation time; this channel is a pure lookup combined with `Disjoint.symm`.
+   It covers the flat-structure fragment — everything a flat-state framework
+   (Veil/IVy) can cover — fully automatically, including `Nat`-valued fields
+   where the old search used to get stuck. Generated certificates are found by
+   the naming convention; *hand-written* ones can be registered explicitly with
+   the `@[field_disjoint]` attribute, and the tactic consults that registry
+   too.
 2. **Semantic fallback**: `cases; rfl`, first *without* casing the values
    (casing a `Nat` value splits it into `zero`/`succ` and the `succ` branch
    does not close), then with casing (needed for pair-valued views).
 
+When neither channel produces a certificate the tactic emits a
+`trace[LeanAction.disjoint_auto]` line before falling back, so the silent
+degradation from "certificate" to "search" is observable.
+
 Neither channel sees function-update (`upd`) footprints: those are
 *conditional* and need `upd_noteq`/`upd_comm` or `DisjointUnder`, by design. -/
+
+initialize registerTraceClass `LeanAction.disjoint_auto
+
+/-- The two head constants of a `Disjoint v₁ v₂` proposition, after stripping
+`forall` binders. This keys the certificate registry. -/
+private def certHeadPair? : Expr → Option (Name × Name)
+  | .forallE _ _ body _ => certHeadPair? body
+  | e =>
+    if e.isAppOfArity ``Disjoint 5 then
+      match e.appFn!.appArg!.getAppFn, e.appArg!.getAppFn with
+      | .const n₁ _, .const n₂ _ => some (n₁, n₂)
+      | _, _ => none
+    else none
+
+/-- Registry of `Disjoint` certificates: `(v₁, v₂) ↦ theorem`, filled by the
+`@[field_disjoint]` attribute. Persisted across modules. -/
+initialize fieldDisjointExt :
+    SimplePersistentEnvExtension (Name × Name × Name) (NameMap (NameMap Name)) ←
+  registerSimplePersistentEnvExtension {
+    name := `LeanAction.fieldDisjoint
+    addEntryFn := fun s (n₁, n₂, thm) =>
+      s.insert n₁ (((s.find? n₁).getD {}).insert n₂ thm)
+    addImportedFn := mkStateFromImportedEntries
+      (fun s (n₁, n₂, thm) => s.insert n₁ (((s.find? n₁).getD {}).insert n₂ thm)) {}
+  }
+
+/-- Register a theorem as a `Disjoint` certificate for `disjoint_auto`, instead
+of relying on the `T.disjoint_f_g` naming convention. -/
+initialize registerBuiltinAttribute {
+  name := `field_disjoint
+  descr := "Register a `Disjoint v₁ v₂` theorem for `disjoint_auto`."
+  add := fun decl _ _ => do
+    let some ci := (← getEnv).find? decl
+      | throwError "field_disjoint: unknown declaration `{decl}`"
+    match certHeadPair? ci.type with
+    | some (n₁, n₂) =>
+        modifyEnv fun env => fieldDisjointExt.addEntry env (n₁, n₂, decl)
+    | none =>
+        throwError "field_disjoint: `{decl}` does not prove `Disjoint v₁ v₂`"
+}
 
 /-- The certificate theorem name for two *sibling field views* `T.fView`,
 `T.gView`: `T.disjoint_f_g`. Returns `none` unless both views are head
@@ -685,16 +790,24 @@ elab "disjoint_auto" : tactic => do
     let v₂ := ty.appArg!
     let heads := (v₁.getAppFn, v₂.getAppFn)
     if let (.const n₁ _, .const n₂ _) := heads then
-      for cert in [fieldDisjointCert? n₁ n₂, fieldDisjointCert? n₂ n₁] do
-        if let some c := cert then
-          if env.contains c then
-            for e in [mkConst c, mkApp (mkConst ``Disjoint.symm) (mkConst c)] do
-              try
-                let gs ← g.apply e
-                if gs.isEmpty then
-                  replaceMainGoal []
-                  return
-              catch _ => pure ()
+      let named := [fieldDisjointCert? n₁ n₂, fieldDisjointCert? n₂ n₁].reduceOption
+      let registered : List Name :=
+        let st := fieldDisjointExt.getState env
+        ((st.find? n₁).bind (·.find? n₂)).toList ++
+          ((st.find? n₂).bind (·.find? n₁)).toList
+      let certs := named ++ registered
+      if certs.isEmpty then
+        trace[LeanAction.disjoint_auto]
+          "no certificate for {n₁} / {n₂}; using the semantic channel"
+      for cert in certs do
+        if env.contains cert then
+          for e in [mkConst cert, mkApp (mkConst ``Disjoint.symm) (mkConst cert)] do
+            try
+              let gs ← g.apply e
+              if gs.isEmpty then
+                replaceMainGoal []
+                return
+            catch _ => pure ()
   -- semantic fallback: `cases; rfl`, first without casing the values
   evalTactic (← `(tactic| refine ⟨?_, ?_, ?_⟩ <;>
     first
