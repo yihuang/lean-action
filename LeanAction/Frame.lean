@@ -823,4 +823,212 @@ elab "disjoint_auto" : tactic => do
       | (intro s a b; try cases s; try cases a; try cases b; rfl)
       | (intro s a; try cases s; try cases a; rfl)))
 
+/-! ## Rely certificates: "this action does not write this view"
+
+`disjoint_auto`'s certificate channel answers *"are these two views disjoint?"*.
+The rely/guarantee analogue answers *"does this action leave this view
+unchanged?"* — the frame-rely obligation of `preserves_of_guarantees` /
+`relyGuarantee_until` (and the `R_frame` shape in `Tests/Relies`). The channel is
+built exactly like `field_disjoint`:
+
+* a theorem such as
+
+```
+@[rely_cert] theorem steps_preserves_pcView {i j} (h : i ≠ j) :
+    PreservesView (steps j) (pcView i)
+```
+
+  is looked up by the **head pair** `(steps, pcView)`, so the per-index side
+  conditions (`i ≠ j`) it carries stay the certificate's business;
+* `rely_auto` applies it to a goal `v.get s' = v.get s` (the certificate's body,
+  with `hstep : rel A s s'` in context) or to a goal `PreservesView A v`, and
+  leaves the side conditions to `assumption`/`grind`.
+
+Unlike disjointness there is no cheap semantic fallback: the action has to be
+unfolded, which only the caller knows how to do, so `rely_auto` reports a missing
+certificate instead of guessing. -/
+
+/-- A **frame-rely certificate** for the pair `(A, v)`: every `A`-step leaves the
+view `v` unchanged. It is `DisjointUnder.get_of_rel` with the action kept opaque
+instead of being written as `focusView v₁ A`. -/
+def PreservesView {σ α : Type u} (A : Action σ) (v : View σ α) : Prop :=
+  ∀ s s', rel A s s' → v.get s' = v.get s
+
+/-- The `(action, view)` head pair of a `PreservesView A v` proposition, after
+stripping `forall` binders. This keys the certificate registry. -/
+private def preservesHeadPair? : Expr → Option (Name × Name)
+  | .forallE _ _ body _ => preservesHeadPair? body
+  | e =>
+    if e.isAppOfArity ``PreservesView 4 then
+      match (e.getAppArgs[2]!).getAppFn, (e.getAppArgs[3]!).getAppFn with
+      | .const nA _, .const nv _ => some (nA, nv)
+      | _, _ => none
+    else none
+
+/-- Registry of `PreservesView` certificates: `(action, view) ↦ theorem`, filled
+by the `@[rely_cert]` attribute. Persisted across modules. -/
+initialize relyCertExt :
+    SimplePersistentEnvExtension (Name × Name × Name) (NameMap (NameMap Name)) ←
+  registerSimplePersistentEnvExtension {
+    name := `LeanAction.relyCert
+    addEntryFn := fun s (nA, nv, thm) =>
+      s.insert nA (((s.find? nA).getD {}).insert nv thm)
+    addImportedFn := mkStateFromImportedEntries
+      (fun s (nA, nv, thm) => s.insert nA (((s.find? nA).getD {}).insert nv thm)) {}
+  }
+
+/-- Register a theorem as a frame-rely certificate for `rely_auto`. -/
+initialize registerBuiltinAttribute {
+  name := `rely_cert
+  descr := "Register a `PreservesView A v` theorem for `rely_auto`."
+  add := fun decl _ _ => do
+    let some ci := (← getEnv).find? decl
+      | throwError "rely_cert: unknown declaration `{decl}`"
+    match preservesHeadPair? ci.type with
+    | some (nA, nv) =>
+        modifyEnv fun env => relyCertExt.addEntry env (nA, nv, decl)
+    | none =>
+        throwError "rely_cert: `{decl}` does not prove `PreservesView A v`"
+}
+
+/-- The head constant of a `v.get _` application, if the expression is one. -/
+private def viewHead? (e : Expr) : Option Name :=
+  if e.isAppOfArity ``View.get 4 then
+    match (e.getAppArgs[2]!).getAppFn with
+    | .const n _ => some n
+    | _ => none
+  else none
+
+/-- The head constant of the action in a `rel A s s'` hypothesis, if there is
+one. This is how `rely_auto` finds `A` when the goal is the certificate's body
+`v.get s' = v.get s` rather than a `PreservesView A v`. -/
+private def actionHeadFromLocal? : TacticM (Option Name) := do
+  for ldecl in (← getLCtx) do
+    if ldecl.isImplementationDetail then continue
+    let ty ← instantiateMVars ldecl.type
+    if ty.isAppOfArity ``rel 4 then
+      match (ty.getAppArgs[1]!).getAppFn with
+      | .const n _ => return some n
+      | _ => pure ()
+  return none
+
+/-- Prove a frame-rely goal by certificate lookup: either `PreservesView A v`, or
+`v.get s' = v.get s` with a `rel A s s'` hypothesis. The certificate's side
+conditions are discharged by `assumption`/`grind`/`decide`. -/
+elab "rely_auto" : tactic => do
+  let g ← getMainGoal
+  let env ← getEnv
+  let ty ← instantiateMVars (← g.getType)
+  let mut action? : Option Name := none
+  let mut view? : Option Name := none
+  if ty.isAppOfArity ``PreservesView 4 then
+    match (ty.getAppArgs[2]!).getAppFn with
+    | .const nA _ => action? := some nA
+    | _ => pure ()
+    match (ty.getAppArgs[3]!).getAppFn with
+    | .const nv _ => view? := some nv
+    | _ => pure ()
+  else if ty.isAppOfArity ``Eq 3 then
+    view? := (viewHead? ty.appFn!.appArg!).orElse (fun _ => viewHead? ty.appArg!)
+    action? ← actionHeadFromLocal?
+  let some nA := action?
+    | throwError "rely_auto: goal is neither `PreservesView A v` nor \
+        `v.get s' = v.get s` with a `rel A s s'` hypothesis"
+  let some nv := view?
+    | throwError "rely_auto: goal is neither `PreservesView A v` nor \
+        `v.get s' = v.get s` with a `rel A s s'` hypothesis"
+  let st := relyCertExt.getState env
+  let certs := ((st.find? nA).bind (·.find? nv)).toList
+  if certs.isEmpty then
+    throwError "rely_auto: no `@[rely_cert]` theorem registered for the pair \
+      ({nA}, {nv})"
+  for cert in certs do
+    let saved ← getGoals
+    try
+      evalTactic (← `(tactic| (apply $(mkIdent cert) <;>
+        (first | assumption | grind | decide))))
+      return
+    catch _ => setGoals saved
+  throwError "rely_auto: certificate(s) {certs} did not apply"
+
+/-! ### Generating frame certificates (`rely_defs`) -/
+
+/-- The leftmost identifier of a syntax tree, if any (a copy of the helper the
+`view_defs` deriver uses for the declaration name). -/
+private partial def firstIdent? : Syntax → Option Name
+  | .ident _ _ n _ => if n == .anonymous then none else some n
+  | .node _ _ args => args.findSome? firstIdent?
+  | _ => none
+
+/-- Resolve a structure name from a type expression, trying the name as written,
+under the current namespace, and after stripping `_root_.`. -/
+private def structNameUnder? (env : Environment) (currNs : Name) (stx : Syntax) :
+    Option Name :=
+  let cands := match firstIdent? stx with
+    | some n => #[n, currNs ++ n, n.replacePrefix `_root_ .anonymous]
+    | none => #[]
+  cands.find? fun c => (getStructureInfo? env c).isSome
+
+/-- The last component of a name as a string (`Pair.a` ↦ `"a"`). -/
+private def lastCompStr (n : Name) : String :=
+  match n with
+  | .str _ s => s
+  | _ => n.toString
+
+/-- `rely_defs T [a₁, …, aₖ] writes [f₁, …, fₖ]` — footprint metadata: the `i`-th
+action writes the field `fᵢ`. For each action and each generated field view
+`T.gView` with `g ≠ fᵢ`, the command emits and registers the certificate
+
+```
+@[rely_cert] theorem T.<action>_preserves_<g>View : PreservesView <action> T.gView
+```
+
+proved by the standard template (`intro`; `unfold` the action and the view;
+`action_simp`; `grind`). So the *generated lemma shape* is exactly
+`Tests/Relies.steps_preserves_pcView`, and `rely_auto` finds it by the head pair
+`(<action>, T.gView)` — the `field_disjoint` deriver's mechanism, with the write
+set as the footprint metadata (the disjointness deriver reads it off the field
+declarations; for actions it has to be stated).
+
+This is for the monomorphic `view_defs` / `deriving ViewFields` fragment (no
+structure parameters, no index side conditions); parameterized certificates such
+as `Tests/Relies.steps_preserves_pcView` are written by hand and tagged
+`@[rely_cert]`. The use site must have `LeanAction` open. -/
+elab "rely_defs" ty:ident "[" acts:term,* "]" "writes" "[" flds:ident,* "]" :
+    command => do
+  let env ← getEnv
+  let currNs ← getCurrNamespace
+  let some tyName := structNameUnder? env currNs ty.raw
+    | throwError "rely_defs: `{ty}` does not name a structure"
+  let some info := getStructureInfo? env tyName
+    | throwError "rely_defs: `{tyName}` is not a structure"
+  let relTy : Name :=
+    if currNs == .anonymous then tyName else tyName.replacePrefix currNs .anonymous
+  let actArr := acts.getElems
+  let fldArr := flds.getElems
+  if actArr.size != fldArr.size then
+    throwError "rely_defs: {actArr.size} action(s) but {fldArr.size} written field(s)"
+  for i in [:actArr.size] do
+    let act := actArr[i]!
+    let some actName := firstIdent? act.raw
+      | throwError "rely_defs: cannot read an action name out of `{act}`"
+    let written := lastCompStr fldArr[i]!.getId
+    for fldName in info.fieldNames do
+      let fld := lastCompStr fldName
+      if fld == written then continue
+      let vName := relTy.str (fld ++ "View")
+      if !(← getEnv).contains (currNs ++ vName) then continue
+      let lemName := relTy.str (lastCompStr actName ++ s!"_preserves_{fld}View")
+      if (← getEnv).contains (currNs ++ lemName) then continue
+      let vId := mkIdent vName
+      let actId := mkIdent actName
+      let cmd ← `(command|
+        @[rely_cert] theorem $(mkIdent lemName) :
+            PreservesView $actId $vId := by
+          intro s s' h
+          unfold $actId at h
+          unfold $vId
+          action_simp <;> grind)
+      Lean.Elab.Command.elabCommand cmd
+
 end LeanAction

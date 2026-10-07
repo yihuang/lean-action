@@ -638,7 +638,11 @@ induction, because it is not globally preserved).
   interfaces like `s'.v ≤ s.v`); the *liveness* RG rule is now
   `leadsTo_of_rank_region` — with `T := A₁ <|> A₂` its `hstab`/`hdec` split by
   component and the environment half is exactly "under the rely, the variant does
-  not increase",
+  not increase". The **frame half of rely discovery is now done**: `PreservesView`
+  + `@[rely_cert]` + `rely_auto` is the rely-side twin of
+  `Disjoint`/`field_disjoint`/`disjoint_auto`, and `rely_defs` generates the
+  certificates from the action footprints (§11.9). What remains on this front is
+  the *constraint* rely (`s'.v ≤ s.v`), which is user knowledge by construction,
   (b) **systematic support for non-state relies** (every rely here is a
   `σ → σ → Prop`; how to generate and validate a suitable rely from code has no
   methodology yet); (c) **liveness for synchronous composition** no longer needs a
@@ -1051,6 +1055,26 @@ difference:
   (a persisted registry the tactic also consults) plus a
   `trace[LeanAction.disjoint_auto]` line on fallback: the failure mode is turned
   from silent into observable.
+* **The rely side reuses that whole channel.** `PreservesView A v` ("every
+  `A`-step leaves `v` unchanged") is the frame-rely obligation as a proposition;
+  `@[rely_cert]` fills the same kind of persisted registry, keyed by the
+  `(action, view)` **head pair** rather than by name, and `rely_auto` applies a
+  certificate to either `PreservesView A v` or the body `v.get s' = v.get s` (with
+  `rel A s s'` in context), leaving the certificate's per-index side conditions
+  (`i ≠ j`) to `assumption`/`grind`. Two design points: (1) there is deliberately
+  **no semantic fallback** (contrast `disjoint_auto`'s `cases; rfl`) — the action
+  has to be unfolded, which only the caller knows how to do, so a miss is a loud
+  "no `@[rely_cert]` for (A, v)"; (2) `rely_defs T [a₁, …] writes [f₁, …]` emits the
+  certificates for the *other* fields from the action footprints, so the generated
+  shape is exactly `Tests/Relies.steps_preserves_pcView` and the *use* site is one
+  `rely_auto` (`Tests/Relies.steps_respects_frame_rely`). "Automatic discovery"
+  therefore means: generate + look up the **frame** half, and leave the
+  **constraint** half (`s'.v ≤ s.v`) to the user, which is precisely the boundary
+  `Tests/Relies` documents. A deriver that also *infers* the footprint instead of
+  taking it as metadata is still open — the first attempt (try every (action,
+  view) pair, skip the failures) does not work, because a failed `elabCommand`
+  *logs* its error and returns without throwing, so the deriver cannot suppress
+  the failed pair's message and the whole command errors.
 * **`sync` hit the same defeq trap again**: `rel`'s equality is `z = (Done.mk, x)`
   while one wants to say `s' = x`, and the two need `Prod.mk.injEq`, not defeq. That
   is the third time (`rel_focusView`, `rel_lift`, now `rel_sync`), and the fix is the

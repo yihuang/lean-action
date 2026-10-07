@@ -58,6 +58,11 @@ def nxt {n : Nat} (i : Fin n) : Fin n :=
 def setPc {n : Nat} (s : St n) (i : Fin n) (v : Pc) : St n :=
   { s with pc := upd s.pc i v }
 
+/-- The view of node `i`'s program counter (`Tests/Relies` registers a
+`PreservesView` certificate for it). -/
+def pcView {n : Nat} (i : Fin n) : View (St n) Pc :=
+  ⟨fun s => s.pc i, fun s v => setPc s i v⟩
+
 /-- Node `i` asks for the token. The guard keeps a node inside the critical
 section from "re-requesting", which safety would not notice but which destroys
 the stability of the liveness region (see `Examples/MutexLiveness`). -/

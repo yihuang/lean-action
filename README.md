@@ -149,6 +149,8 @@ lake build          # library + examples + LeanActionTests (Lean v4.33.0)
 | `relyGuarantee_until` | prefix stability ("a region holds until the goal is reached"), the temporal twin of rely/guarantee |
 | `ViewModule.sync` / `sync_preserves` / `sync_proj` | synchronous (lock-step) composition and its theorems |
 | `disjoint_auto` | closes `Disjoint` goals for structure-field views |
+| `PreservesView A v` / `@[rely_cert]` / `rely_auto` | frame-rely certificates: "this action leaves this view unchanged", looked up by the `(action, view)` head pair |
+| `rely_defs T [a₁, …] writes [f₁, …]` | emit + register those certificates from the action footprints (monomorphic `ViewFields` structures) |
 
 ### Automation
 
