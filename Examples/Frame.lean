@@ -383,23 +383,26 @@ theorem ptr_safe_under :
 
 /-! ## Where the frame assumption fails: the mutex protocol
 
-Both processes of `Examples.Mutex` write `turn`, so no disjointness proof exists,
-and the hand-written global invariant (with `action_simp; grind` over the six
-process steps) is genuinely necessary there. -/
+Every node of `Examples.Mutex` writes the shared token `turn`, so no disjointness
+proof exists, and the hand-written global invariant (with `action_simp; grind`
+over the node steps) is genuinely necessary there. The two footprints below are
+for the `n = 2` instance, nodes `0` and `1`. -/
 
-/-- Footprint of mutex process 1: its program counter and the shared turn. -/
-def mutexP₁ : View Mutex.St (Nat × Nat) :=
-  ⟨fun s => (s.pc1, s.turn), fun s v => { s with pc1 := v.1, turn := v.2 }⟩
+/-- Footprint of mutex node `0`: its program counter and the shared token. -/
+def mutexP₀ : View (Mutex.St 2) (Mutex.Pc × Fin 2) :=
+  ⟨fun s => (s.pc 0, s.turn), fun s v => { s with pc := upd s.pc 0 v.1, turn := v.2 }⟩
 
-/-- Footprint of mutex process 2: it also writes the shared turn. -/
-def mutexP₂ : View Mutex.St (Nat × Nat) :=
-  ⟨fun s => (s.pc2, s.turn), fun s v => { s with pc2 := v.1, turn := v.2 }⟩
+/-- Footprint of mutex node `1`: it also writes the shared token. -/
+def mutexP₁ : View (Mutex.St 2) (Mutex.Pc × Fin 2) :=
+  ⟨fun s => (s.pc 1, s.turn), fun s v => { s with pc := upd s.pc 1 v.1, turn := v.2 }⟩
 
-theorem mutex_not_disjoint : ¬ Disjoint mutexP₁ mutexP₂ := by
+theorem mutex_not_disjoint : ¬ Disjoint mutexP₀ mutexP₁ := by
   intro h
-  have hh := h.set_set (⟨0, 0, 1⟩ : Mutex.St) (⟨1, 1⟩ : Nat × Nat) (⟨1, 2⟩ : Nat × Nat)
-  have : (1 : Nat) = 2 := by
-    simpa [mutexP₁, mutexP₂] using congrArg Mutex.St.turn hh
-  omega
+  have hh := h.set_set (⟨fun _ => Mutex.Pc.out, (0 : Fin 2)⟩ : Mutex.St 2)
+    (⟨Mutex.Pc.wait, (1 : Fin 2)⟩ : Mutex.Pc × Fin 2)
+    (⟨Mutex.Pc.cs, (0 : Fin 2)⟩ : Mutex.Pc × Fin 2)
+  have : (1 : Fin 2) = 0 := by
+    simpa [mutexP₀, mutexP₁] using congrArg Mutex.St.turn hh
+  exact absurd this (by decide)
 
 end Examples.Frame

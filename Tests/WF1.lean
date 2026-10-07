@@ -6,10 +6,10 @@ Regression tests for the WF1-style leads-to rule (`leadsTo_of_wf1`, now in
 `LeanAction.Liveness`), put to work on the mutex protocol.
 
 Claim under test: WF1 turns "P eventually leads to Q via action A under weak
-fairness" into three one-step obligations that the existing
-`action_simp; grind` pipeline discharges. On the mutex, the whole
-`eventually_enter1` + rank argument + `LeadsTo` repackaging collapses into
-three small lemmas.
+fairness" into three one-step obligations that the existing `action_simp; …`
+pipeline discharges. On the mutex, the whole `eventually` + rank argument +
+`LeadsTo` repackaging collapses into three small lemmas, stated for an arbitrary
+node `i`.
 -/
 import LeanAction
 import Examples.Mutex
@@ -19,57 +19,54 @@ open LeanAction
 
 namespace Tests.WF1
 
-/-! ## WF1 on the mutex: `LeadsTo Region (pc1 = 2)` with no rank
+/-! ## WF1 on the mutex: `LeadsTo (Region i) (pc i = cs)` with no rank
 
-Compare with `Examples/MutexLiveness.lean`: `eventually_enter1` needed a
-by-contradiction wrapper, a rank, region bookkeeping, and a separate
-`leadsTo_enter1` repackaging step. Here the LeadsTo form comes out directly. -/
+Compare with `Examples/MutexLiveness.lean`: `eventually_enter` needed a rank, a
+region bookkeeping, and a separate `LeadsTo` repackaging step. Here the `LeadsTo`
+form comes out directly from the three obligations. -/
 
-open Examples.Mutex (St M next steps1 steps2 req1 enter1 exit1 req2 enter2 exit2)
-open Examples.MutexLiveness (Region)
+open Examples.Mutex (Pc St M next req enter exit steps setPc release)
+open Examples.MutexLiveness (Region others rel_next_iff)
 
-/-- Progress: an `enter1` step from the region reaches the goal. -/
-theorem wf1_prog : ∀ (s s' : St), Region s → ¬ s.pc1 = 2 → rel enter1 s s' → s'.pc1 = 2 := by
-  intro s s' hs hq h
+/-- Progress: an `enter i` step from the region reaches the goal. -/
+theorem wf1_prog {n : Nat} (i : Fin n) :
+    ∀ s s', Region i s → ¬ s.pc i = Pc.cs → rel (enter i) s s' → s'.pc i = Pc.cs := by
+  intro s s' hs _ h
   simp only [Region] at hs
-  simp only [enter1] at h
+  simp only [enter] at h
   action_simp
-  grind
+  simp_all [setPc, upd.eq_1]
 
 /-- Environment: from the region, every module step either reaches the goal or
-stays in `Region ∧ ¬goal`. Reuses the two interface lemmas the R/G example
-already had (`region_steps1`/`region_steps2`). -/
-theorem wf1_env : ∀ (s s' : St), Region s → ¬ s.pc1 = 2 → rel M.next s s' →
-    (Region s' ∧ ¬ s'.pc1 = 2) ∨ s'.pc1 = 2 := by
+stays in `Region i ∧ ¬goal`. Reuses the two interface lemmas the R/G example
+already had. -/
+theorem wf1_env {n : Nat} (i : Fin n) :
+    ∀ s s', Region i s → ¬ s.pc i = Pc.cs → rel (next (n := n)) s s' →
+      (Region i s' ∧ ¬ s'.pc i = Pc.cs) ∨ s'.pc i = Pc.cs := by
   intro s s' hs _ h
-  have hbeh : rel (steps1 <|> steps2) s s' := by
-    simpa [M, next] using h
-  rw [rel_orElse] at hbeh
-  rcases hbeh with h1 | h2
-  · rcases Examples.MutexLiveness.region_steps1 hs h1 with hreg | hgoal
-    · exact Or.inl ⟨hreg, fun hc => by have h1' := hreg.1; omega⟩
+  rcases (rel_next_iff i).mp h with h | h
+  · rcases Examples.MutexLiveness.region_steps_own i hs h with hreg | hgoal
+    · exact Or.inl ⟨hreg, fun hc => by simp only [Region] at hreg; grind⟩
     · exact Or.inr hgoal
-  · have hreg := Examples.MutexLiveness.region_steps2 hs h2
-    exact Or.inl ⟨hreg, fun hc => by have h1' := hreg.1; omega⟩
+  · have hreg := Examples.MutexLiveness.region_steps_others i hs h
+    exact Or.inl ⟨hreg, fun hc => by simp only [Region] at hreg; grind⟩
 
-/-- Enabledness: inside the region, `enter1` is enabled (its guard is `Region`'s
-first two conjuncts). -/
-theorem wf1_enabled : ∀ (s : St), Region s → ¬ s.pc1 = 2 → Enabled enter1 s := by
+/-- Enabledness: inside the region, `enter i` is enabled (its guard is `Region
+i`'s first two conjuncts). -/
+theorem wf1_enabled {n : Nat} (i : Fin n) :
+    ∀ s, Region i s → ¬ s.pc i = Pc.cs → Enabled (enter i) s := by
   intro s hs _
   simp only [Region] at hs
-  show ∃ s', rel enter1 s s'
-  refine ⟨{ s with pc1 := 2 }, ?_⟩
-  simp only [enter1]
-  action_simp
-  grind
+  simpa [enter] using And.intro hs.1 hs.2.1
 
 /-- **The WF1 route to mutex liveness.** Same conclusion as
-`Examples.MutexLiveness.leadsTo_enter1`, but the proof is three interface
-lemmas plus the rule — no rank, no prefix induction, no contradiction wrapper. -/
-theorem leadsTo_enter1_wf1 (b : Behavior St) (hbeh : IsBehavior M b)
-    (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b :=
-  leadsTo_of_wf1 (M := M) (A := enter1) (P := Region) (Q := fun s => s.pc1 = 2)
-    hbeh hfair wf1_prog wf1_env wf1_enabled
+`Examples/MutexLiveness.leadsTo_enter`, but the proof is three interface lemmas
+plus the rule — no rank, no prefix induction. -/
+theorem leadsTo_enter_wf1 {n : Nat} (i : Fin n) (b : Behavior (St n))
+    (hbeh : IsBehavior (M n) b) (hfair : WeakFair (enter i) b) :
+    LeadsTo (Region i) (fun s => s.pc i = Pc.cs) b :=
+  leadsTo_of_wf1 (M := M n) (A := enter i) (P := Region i) (Q := fun s => s.pc i = Pc.cs)
+    hbeh hfair (wf1_prog i) (wf1_env i) (wf1_enabled i)
 
 /-! ## `⟨A⟩`-WF1 for a stuttering progress action
 

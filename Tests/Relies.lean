@@ -6,10 +6,10 @@ Test: where can a rely candidate come from, and what does it cost to
 check? Two shapes emerge on the two existing examples:
 
 * **Frame-relies** (footprints mostly disjoint): the rely says "the partner
-  preserves the fields it does not write". For mutex process 1, the write
-  set of `steps2` is `{pc2, turn}`, so the candidate rely for process 1 is
-  `R₁ s s' := s'.pc1 = s.pc1`. Checking it is *one* `action_simp; grind`
-  per field — the existing pipeline already discharges it.
+  preserves the fields it does not write". For mutex node `i`, a step of node
+  `j ≠ i` writes only `pc j` and `turn`, so the candidate rely is
+  `Rᵢ s s' := s'.pc i = s.pc i`. Checking it is *one* `action_simp; …` per node —
+  the existing pipeline already discharges it.
 * **Constraint-relies** (footprints fully overlap, as in
   `Examples/RelyGuarantee`): the rely is a value constraint (`v` does not
   increase) that cannot be derived from write sets — it is user knowledge.
@@ -19,7 +19,6 @@ So "automatic discovery of relies" should mean: derive the frame part
 mechanically, leave the constraint part to the user, and fail loudly when a
 guard-free partner step breaks the invariant (the §11.9 infeasibility case).
 -/
-
 import LeanAction
 import Examples.Mutex
 import Examples.MutexLiveness
@@ -28,52 +27,48 @@ open LeanAction
 
 namespace Tests.Relies
 
-open Examples.Mutex (St M next steps1 steps2 req1 enter1 exit1 req2 enter2 exit2)
+open Examples.Mutex (Pc St M next req enter exit steps setPc release)
+open Examples.MutexLiveness (Region others)
 
 /-! ## Frame-relies: preservation of non-written fields -/
 
-/-- `steps2`'s write set is `{pc2, turn}`; hence, automatically checkable,
-`steps2` preserves `pc1`. One `action_simp; grind` — no manual cases. -/
-theorem steps2_preserves_pc1 {s s' : St} (h : rel steps2 s s') : s'.pc1 = s.pc1 := by
-  simp only [steps2, req2, enter2, exit2] at h
+/-- A step of node `j` writes only `pc j` and `turn`; hence, for `i ≠ j`, it
+preserves `pc i`. One `action_simp; …` — no manual cases. -/
+theorem steps_preserves_other_pc {n : Nat} {i j : Fin n} (h : i ≠ j) {s s' : St n}
+    (hstep : rel (steps j) s s') : s'.pc i = s.pc i := by
+  simp only [steps, req, enter, exit] at hstep
   action_simp
-  grind
+  rcases hstep with hstep | hstep | hstep
+  all_goals
+    rcases hstep with ⟨t, ⟨hp, ht⟩, hs'⟩
+    subst t
+    subst s'
+    simp_all [setPc, release, upd.eq_1]
+    try grind
 
-/-- Symmetrically for process 2. Note both proofs are *generated* in the same
-shape: unfold the partner, `action_simp`, `grind`. A metaprogram can emit
-one lemma per field outside the partner's write set. -/
-theorem steps1_preserves_pc2 {s s' : St} (h : rel steps1 s s') : s'.pc2 = s.pc2 := by
-  simp only [steps1, req1, enter1, exit1] at h
-  action_simp
-  grind
+/-- The candidate frame-rely for node `i`, as a relation. -/
+def R_frame {n : Nat} (i : Fin n) : Rel (St n) (St n) := fun s s' => s'.pc i = s.pc i
 
-/-- `steps2` also preserves the *bounds* it doesn't touch: `pc1` range. This
-is the shape the region's rely obligation needs. -/
-theorem steps2_preserves_pc1_range {s s' : St} (h : rel steps2 s s')
-    (hb : s.pc1 ≤ 2) : s'.pc1 ≤ 2 := by
-  rw [steps2_preserves_pc1 h]
-  exact hb
-
-/-- The candidate frame-rely for process 1, as a relation. -/
-def R_frame : Rel St St := fun s s' => s'.pc1 = s.pc1
-
-/-- Checking `steps2 ⊆ R_frame` is literally the generated lemma above. -/
-theorem steps2_respects_frame_rely {s s' : St} (h : rel steps2 s s') : R_frame s s' :=
-  steps2_preserves_pc1 h
+/-- Checking a single node step `j ≠ i` against `R_frame i` is literally the
+generated lemma above. Note the shape is *generated*: unfold the partner,
+`action_simp`, close — one lemma per view outside the partner's write set. -/
+theorem steps_respects_frame_rely {n : Nat} {i j : Fin n} (h : i ≠ j) {s s' : St n}
+    (hstep : rel (steps j) s s') : R_frame i s s' :=
+  steps_preserves_other_pc h hstep
 
 /-! ## What the frame-rely buys in the region proof -/
 
-open Examples.MutexLiveness (Region)
-
 /-- The environment's obligation in `relyGuarantee_until` for the region.
-The `pc1` conjunct of `Region` is preserved by the *generated* frame lemma
-`steps2_preserves_pc1`; the `pc2 ≤ 1` bound is what genuinely needs the
-protocol argument (`region_steps2`). The proof splits exactly along the
+The `pc i` conjunct of `Region i` is preserved by the *generated* frame lemma
+`steps_preserves_other_pc`; the rest is what genuinely needs the protocol
+argument (`region_steps_others`). The proof splits exactly along the
 "derivable vs. user knowledge" line. -/
-theorem region_env_via_frame {s s' : St} (hs : Region s) (h : rel steps2 s s') :
-    Region s' := by
-  have hp1 : s'.pc1 = s.pc1 := steps2_preserves_pc1 h
-  exact Examples.MutexLiveness.region_steps2 hs h
+theorem region_env_via_frame {n : Nat} {i j : Fin n} (h : j ≠ i) {s s' : St n}
+    (hs : Region i s) (hstep : rel (steps j) s s') : Region i s' := by
+  have hp : s'.pc i = s.pc i := steps_preserves_other_pc (Ne.symm h) hstep
+  exact Examples.MutexLiveness.region_steps_others i hs (by
+    simp only [others, rel_choiceAll]
+    exact ⟨⟨j, h⟩, hstep⟩)
 
 /-! ## The constraint-rely shape (from Examples/RelyGuarantee) -/
 

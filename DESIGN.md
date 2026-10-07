@@ -296,8 +296,8 @@ the specification".
 The `interleave` of §5.2 composes only **product states**, because there "the two
 components do not interfere" is *hard-wired into the type*: the state is `σ × τ`,
 and one component's action cannot touch the other's. A shared record has no such
-convenience — process 1 writes `pc1`, process 2 writes `pc2`, and both may write
-`turn`.
+convenience — in the mutex, node `i` writes its own `pc i`, and every node may
+write the shared token `turn`.
 
 To recover compositionality one has to state the **frame condition** as a provable
 fact:
@@ -394,8 +394,11 @@ theorem relyGuarantee_until (hbeh : ∀ n, rel (A₁ <|> A₂) (b n) (b (n+1)))
 
 `Examples/MutexLiveness.region_until_goal` is now an instance of this theorem: the
 old "six-way `action_simp; grind` plus a hand-written prefix induction" is split
-into two interface lemmas (process 1's guarantee, process 2's rely), with the
-induction supplied by the library.
+into two interface lemmas (a node's own guarantee `region_steps_own`, the
+environment's rely `region_steps_others`), with the induction supplied by the
+library. The node split itself is `MutexLiveness.rel_next_iff`
+(`next = steps i <|> others i`), so binary `relyGuarantee_until` still covers the
+`Fin n` case.
 
 **Synchronous (lock-step) composition**: `ViewModule.sync` makes both components
 step together; `Disjoint.set_set` guarantees that the order of the two updates does
@@ -581,10 +584,10 @@ engine), not `Nat`-specific.
   `countTo3_total` in `Examples/Liveness.lean`).
 
 Liveness of a shared-memory protocol is instantiated in
-`Examples/MutexLiveness.lean`: "if process 1 is in the region (waiting and holding
-the turn) and `enter1` is weakly fair, it eventually enters the critical section",
+`Examples/MutexLiveness.lean`: "if node `i` is in the region (waiting and holding
+the token) and `enter i` is weakly fair, it eventually enters the critical section",
 and the complementary direction "inside the critical section, weak fairness for
-`exit1` eventually takes it out" (the latter **consumes** safety: the stability of
+`exit i` eventually takes it out" (the latter **consumes** safety: the stability of
 the region comes from `Mutex.inv_step`). The approach is to pair the variant with a
 hand-written region `Region`, rather than to hope for global monotonicity.
 
@@ -652,12 +655,12 @@ Examples that compile, and what they cover:
 | --- | --- |
 | `Examples/Basic` | `do` DSL, `<|>`, the invariant `n = log.length`, `safe_induct`, `while` + `rel_loop`, nested-field focus via `View.comp`, and the deriver's pairwise `Disjoint` certificates discharged by `disjoint_auto` |
 | `Examples/Parallel` | `Module.interleave`, a sum invariant, `Refines` with stuttering |
-| `Examples/Mutex` | shared-variable protocol (turn-based mutual exclusion): `guard` + six process steps, an invariant mixing both processes, `safe_induct`/`safe_of_invariant`, constructive reachability, `not_rel_guard_seq` to prove "blocked" |
+| `Examples/Mutex` | N-node shared-variable protocol (token-based mutual exclusion): nodes indexed by `Fin n`, an inductive per-node `pc` (`out`/`wait`/`cs`), `guard` + `choiceAll` over the node steps, the invariant "in the critical section ⇒ holds the token", `safe_induct`/`safe_of_invariant`, constructive reachability, `not_rel_guard_seq` to prove "blocked" |
 | `Examples/Hoare` | partial correctness: `Hoare.iterate` (arithmetic post-condition), `Hoare.loop` (`while` + exit condition), `Hoare.nondet`, `Hoare.focusView` (focused triples) |
 | `Examples/DataRefinement` | non-identity abstraction map, safety transfer along refinement, an implementation-only invariant (`count = log.length`), `Refines.reach` lifting concrete runs |
 | `Examples/Machine` | stack machine with the program in the state: `choiceAll` dispatch, safety for **every** program (the code never grows), the concrete run `[push 2, push 3, add] → [5]` |
 | `Examples/Liveness` | inevitability under fairness (a counter must reach 3), an explicit theorem that **liveness fails without fairness** (a stuttering behavior), the safety→`Always` bridge (including `Always`-form mutual exclusion), `while` termination and loop total correctness |
-| `Examples/MutexLiveness` | liveness of the shared-memory protocol: a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant); the enter direction is also proved with the rank-free WF1 rule (`leadsTo_of_wf1`) |
+| `Examples/MutexLiveness` | liveness of the N-node protocol: the step split `next = steps i <|> others i` (`rel_next_iff`), a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant); the enter direction is also proved with the rank-free WF1 rule (`leadsTo_of_wf1`) |
 | `Examples/ParallelLiveness` | liveness composition for interleaving: component liveness (projection + fairness transfer + sequence-level rank argument) into product liveness, with a counterexample showing the fairness hypothesis for the right component cannot be dropped |
 | `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous safety and liveness (`sync`, `two_sync_live`), nested footprints (`Disjoint.comp_of_disjoint`), indexed/array footprints (`upd`, conditional on `i ≠ j`), conditional disjointness (`DisjointUnder`, aliasing freedom), and `¬ Disjoint` explaining why mutex is outside this layer |
 | `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) needing no explicit `Rel`, the liveness counterpart (`leadsTo_of_rank_region` with an **opaque** environment known only by its rely `s'.v ≤ s.v`), and `¬ Disjoint` showing why the frame layer cannot do it |
@@ -686,14 +689,14 @@ descends through the two projections" (`reach_interleave_fst/snd`).
 
 ### 11.2 What felt natural
 
-* **Protocol size is not a problem**: the mutex protocol's six-way nondeterministic
-  step (including two `exit`s that rewrite the shared `turn`) goes through in one
-  shot with `inv_induct; simp only [...]; action_simp; grind`, no manual `rcases`.
+* **Protocol size is not a problem**: the mutex protocol's `choiceAll` over the
+  nodes (including `exit`s that rewrite the shared `turn`) goes through with
+  `action_simp` + `simp_all`, no manual `rcases`.
 * **The three-stage invariant** (`init ⊆ I` → `Preserves next I` → `I ⊆ P`) matches
   real proof habits and `Module.safe_of_invariant` provides exactly that shape.
 * **Constructive reachability**: a chain of `Reach.single`/`Reach.step` with one
-  `action_simp` lemma per step proves both what *can* happen (`p1_can_enter`) and
-  what *cannot* (`p2_blocked_…`).
+  `action_simp` lemma per step proves both what *can* happen (`can_enter`) and
+  what *cannot* (`blocked_by_token`).
 * **Refinement and implementation details coexist**: the abstract layer uses
   `Refines.safe` for interface properties while the implementation proves
   log-length invariants invisible to the abstraction, with no interference.
@@ -741,6 +744,16 @@ descends through the two projections" (`reach_interleave_fst/snd`).
    of **independent components**; shared memory needs a frame/separation layer.
 8. **Loop termination was still absent**: `Preserves.loop`/`Hoare.loop` only give
    partial correctness; liveness (fairness, `Eventually`) was out of scope (§9.2).
+9. **Parameterizing the node count turns the state into an array.** Generalizing the
+   mutex to `n` nodes (`pc : Fin n → Pc`, `turn : Fin n`) made the program-counter
+   update *indexed*, i.e. `upd s.pc i v`. `simp only [upd]` does **not** unfold it:
+   `upd.eq_def` is stated on the fully applied form (`upd f i v j`), so it misses the
+   function-valued occurrence inside `s' = { s with pc := upd … }`. The working
+   pattern is `unfold setPc release upd at *` (delta-unfolding rewrites bare
+   occurrences too) followed by `simp_all [upd.eq_1]`, with a final `grind` for the
+   constructor case analysis; `grind` alone does not relate `s'.pc i` to the
+   structure literal. Bonus: making `pc` an **inductive** type (`out`/`wait`/`cs`)
+   deletes the `pc_bounds` invariant entirely — "the pc is in range" is now `cases`.
 
 ### 11.4 Extra lessons from the liveness layer
 
@@ -785,7 +798,7 @@ descends through the two projections" (`reach_interleave_fst/snd`).
 * **`LeadsTo` needs its algebra**: `LeadsTo.cancel` (`P ⇝ Q ∨ R` together with
   `R ⇝ Q` gives `P ⇝ Q`), the shift lemmas `isBehavior_add`/`weakFair_add`, and the
   introduction principle `LeadsTo.of_shift` are each tiny, but without them every
-  packaging proof (e.g. `Examples/MutexLiveness.leadsTo_enter1`) re-implements the
+  packaging proof (e.g. `Examples/MutexLiveness.leadsTo_enter`) re-implements the
   `∀ n, ∃ m ≥ n` bookkeeping and the behavior-shift by hand.
 * **Fusing the two liveness engines closes the "global invariant" gap.** The rank
   theorems assume `hI : ∀ n, μ (b n) > 0 → I (b n)` — a *time-indexed universal*.
@@ -793,7 +806,7 @@ descends through the two projections" (`reach_interleave_fst/snd`).
   `Region` again while `μ > 0`), so the proof carried a
   `by_cases (∃ N, Q (b N))` and only ran the rank argument on the never-reached
   prefix. The fused rule `leadsTo_of_rank_region` replaces `hI` by WF1's *stepwise*
-  `hstab` and performs that prefix induction once; `eventually_enter1` then
+  `hstab` and performs that prefix induction once; `eventually_enter` then
   collapses to a single `apply` that shares `wf1_env` with the WF1 route. The
   general lesson: **a "global" hypothesis that a rule only uses on a prefix should
   be restated as that prefix property** — and WF1's `henv` shape *is* the prefix
@@ -808,7 +821,7 @@ descends through the two projections" (`reach_interleave_fst/snd`).
 Pushing liveness to a shared-variable protocol like `Mutex` exposed three things:
 
 1. **The variant is not globally monotone.**
-   `rank s = if s.pc1 = 2 then 0 else 1` goes back from `0` to `1` on the
+   `rank i s = if s.pc i = cs then 0 else 1` goes back from `0` to `1` on the
    "leave the critical section" step. The original rank argument demanded a global
    `μ s' ≤ μ s`, so it had to be relaxed to "only inside the invariant region `I`,
    only while `μ > 0`, and only then monotone/enabled"
@@ -816,25 +829,26 @@ Pushing liveness to a shared-variable protocol like `Mutex` exposed three things
    needed while `μ > 0`, which corresponds exactly to "once the goal is reached it
    does not matter what happens next".
 2. **The region is not globally preserved**, so `Preserves`/`always_of_preserves` do
-   not apply: `Region ∨ pc1 = 2` is broken by `exit1` (`pc1` becomes `0`). What does
-   hold is the **prefix form**: "as long as the critical section has not been
-   entered, the state stays in the region", proved by induction over the behavior
-   prefix (`region_until_goal`), where the "next step is not `pc1 = 2`" hypothesis
-   rules out the `enter1` branch. This is also why `eventually_enter1` has to start
-   with `by_cases (∃ N, pc1 = 2)`: if the goal is already reached, one is done;
-   otherwise "`μ > 0` throughout" holds and hence the region does.
+   not apply: `Region i ∨ pc i = cs` is broken by `exit i` (`pc i` becomes `out`).
+   What does hold is the **prefix form**: "as long as the critical section has not
+   been entered, the state stays in the region", proved by induction over the
+   behavior prefix (`region_until_goal`), where the "next step is not `pc i = cs`"
+   hypothesis rules out the `enter i` branch. This is also why `leadsTo_enter` goes
+   through the fused `leadsTo_of_rank_region`, which performs that `by_cases`
+   internally: if the goal is already reached, one is done; otherwise "`μ > 0`
+   throughout" holds and hence the region does.
 3. **Safety and liveness have different demands on the model.** The original `Mutex`
-   example wrote `req1` (request the lock) as the unguarded
-   `update (pc1 := 1)`: safety was unaffected (it does not touch `turn`), but a
-   process inside the critical section could "re-request" and drop back to waiting,
+   example wrote `req i` (request the lock) as the unguarded
+   `update (pc i := wait)`: safety was unaffected (it does not touch `turn`), but a
+   node inside the critical section could "re-request" and drop back to waiting,
    which destroys the stability of the region, so liveness could not be proved.
-   Adding `guard (pc1 = 0)` made everything go through. **Conclusion: a model that is
-   permissive enough for safety will betray you at liveness.**
+   Adding `guard (pc i = out)` made everything go through. **Conclusion: a model that
+   is permissive enough for safety will betray you at liveness.**
 
-The complementary direction `leadsTo_exit1` (leaving the critical section) is an
+The complementary direction `leadsTo_exit` (leaving the critical section) is an
 example of liveness **consuming** safety: the fact "in the critical section implies
-holding the turn" comes from `Mutex.inv_step` + `always_of_preserves`, and without
-it the other process's steps cannot be ruled out and the variant's monotonicity
+holding the token" comes from `Mutex.inv_step` + `always_of_preserves`, and without
+it the other nodes' steps cannot be ruled out and the variant's monotonicity
 cannot be established.
 
 ### 11.6 Generators: why a term macro fails and a command succeeds
@@ -947,9 +961,9 @@ difference:
 * **R/G only really pays off on prefix properties.** The original
   `region_until_goal` in `Examples/MutexLiveness` was "six-way `action_simp; grind`
   plus a hand-written prefix induction"; with R/G it becomes two one-sided interface
-  lemmas (`region_steps1` is the component's own guarantee, `region_steps2` is the
-  environment's rely, the latter never mentioning `steps1`) plus the library's
-  `relyGuarantee_until` doing the induction. By contrast the mutex's **safety**
+  lemmas (`region_steps_own i` is node `i`'s own guarantee, `region_steps_others i`
+  is the environment's rely, the latter never mentioning `steps i`) plus the
+  library's `relyGuarantee_until` doing the induction. By contrast the mutex's **safety**
   (`inv_step`) is not shorter with R/G — see the next point.
 * **For state invariants, R/G buys modularity, not brevity.** I tried to redo a
   "shared cell × two components" safety example and the conclusion was clear: if some

@@ -2,26 +2,25 @@
 Examples.MutexLiveness
 ======================
 
-Liveness for the shared-memory protocol of `Examples.Mutex`: if process 1 is
-waiting and holds the turn, then under weak fairness for `enter1` it eventually
-enters the critical section.
+Liveness for the N-node token protocol of `Examples.Mutex`: if node `i` is
+waiting and holds the token, then under weak fairness for `enter i` it
+eventually enters the critical section.
 
-The interesting part is that the natural variant (`1` until process 1 is in the
-critical section, `0` afterwards) is **not** globally non-increasing: leaving the
-critical section sends `pc1` back to `0` and the variant back up to `1`. What
-makes the argument go through is that the variant is only required to behave
-while it is positive — `eventually_zero_of_weakFair_inv` takes an invariant
-region for exactly that purpose, and the region here is stable until the goal is
-reached.
+The two-process argument generalizes verbatim; what changes is the split of a
+step into "node `i`'s own step" (`steps i`) and "a step of some other node"
+(`others i`). `rel_next_iff` is that split, and it is exactly what
+`relyGuarantee_until` consumes — the environment interface for node `i` is
+"every `j ≠ i` respects the region".
 
-This is also where the guard on `req1`/`req2` matters: without it a process could
-"re-request" from inside the critical section, which safety does not notice but
-which destroys the stability of the region.
-
-The enter direction is proved twice: once with the rank theorem
-(`eventually_enter1`/`leadsTo_enter1`) and once with the rank-free `WF1` rule
-(`leadsTo_enter1_wf1`). The leave direction genuinely needs the rank + safety
-pair, which is why the rank machinery stays.
+As before:
+* the natural rank (`1` until entering, `0` afterwards) is **not** globally
+  non-increasing — leaving the critical section sends it back up — so the
+  region-restricted rule is needed;
+* the `enter` direction is proved twice: with the fused rank rule
+  `leadsTo_of_rank_region` and with the rank-free `leadsTo_of_wf1`, sharing the
+  same three one-step interface lemmas;
+* the `leave` direction consumes safety (`Mutex.inv`), and the `guarded` `req`
+  is what makes the region stable.
 -/
 import LeanAction
 import Examples.Mutex
@@ -30,207 +29,229 @@ open LeanAction
 
 namespace Examples.MutexLiveness
 
-open Examples.Mutex (St M next steps1 steps2 req1 enter1 exit1 req2 enter2 exit2)
+open Examples.Mutex (Pc St M next init inv inv_step inv_init req enter exit steps setPc release)
 
-/-- Process 1 is waiting and holds the turn, and process 2 is not in the critical
-section. -/
-def Region (s : St) : Prop := s.pc1 = 1 ∧ s.turn = 1 ∧ s.pc2 ≤ 1
+/-! ## The environment interface: own steps vs. the other nodes -/
 
-/-- Variant: `1` until process 1 is in the critical section, `0` afterwards. -/
-def rank (s : St) : Nat := if s.pc1 = 2 then 0 else 1
+/-- The steps of every node other than `i` (the environment of node `i`). -/
+def others {n : Nat} (i : Fin n) : Action (St n) :=
+  choiceAll (fun j : {j : Fin n // j ≠ i} => steps j.1)
 
-theorem rank_le_one (s : St) : rank s ≤ 1 := by
-  unfold rank; split <;> omega
+/-- `next` splits into node `i`'s own step and the environment's steps. -/
+theorem rel_next_iff {n : Nat} (i : Fin n) {s s' : St n} :
+    rel (next (n := n)) s s' ↔ rel (steps i) s s' ∨ rel (others i) s s' := by
+  simp only [next, others, rel_choiceAll]
+  constructor
+  · rintro ⟨j, hj⟩
+    by_cases hji : j = i
+    · subst hji; exact Or.inl hj
+    · exact Or.inr ⟨⟨j, hji⟩, hj⟩
+  · rintro (h | ⟨⟨j, _⟩, hj⟩)
+    · exact ⟨i, h⟩
+    · exact ⟨j, hj⟩
 
-theorem rank_eq_zero_iff {s : St} : rank s = 0 ↔ s.pc1 = 2 := by
-  unfold rank; split <;> simp_all
+/-- **The region**: node `i` is waiting, holds the token, and no *other* node is
+in the critical section. -/
+def Region {n : Nat} (i : Fin n) (s : St n) : Prop :=
+  s.pc i = Pc.wait ∧ s.turn = i ∧ ∀ j, j ≠ i → s.pc j ≠ Pc.cs
 
-theorem rank_pos_iff {s : St} : rank s > 0 ↔ s.pc1 ≠ 2 := by
-  unfold rank; split <;> simp_all
-
-/-! ## The region is stable until the goal is reached -/
-
-/-- Process 1's **own** contribution: from the region its steps stay in the region
-or take the critical section (its guarantee). -/
-theorem region_steps1 {s s' : St} (hs : Region s) (h : rel steps1 s s') :
-    Region s' ∨ s'.pc1 = 2 := by
-  simp only [steps1, req1, enter1, exit1, Region] at hs h ⊢
+/-- Node `i`'s own contribution: from the region, its steps stay in the region or
+take the critical section. This is its *guarantee*. -/
+theorem region_steps_own {n : Nat} (i : Fin n) {s s' : St n}
+    (hs : Region i s) (h : rel (steps i) s s') :
+    Region i s' ∨ s'.pc i = Pc.cs := by
+  simp only [steps, req, enter, exit, Region] at hs h ⊢
   action_simp
-  grind
+  simp_all [setPc, upd.eq_1]
 
-/-- The **environment interface** process 1 is allowed to assume: process 2's
-steps never leave the region. This is the rely/guarantee obligation for the
-environment, stated without any reference to `steps1`. -/
-theorem region_steps2 {s s' : St} (hs : Region s) (h : rel steps2 s s') : Region s' := by
-  simp only [steps2, req2, enter2, exit2, Region] at hs h ⊢
+/-- The **environment interface** node `i` is allowed to assume: a step of any
+other node never leaves the region. This is the rely/guarantee obligation for the
+environment, stated without reference to `steps i`. -/
+theorem region_steps_others {n : Nat} (i : Fin n) {s s' : St n}
+    (hs : Region i s) (h : rel (others i) s s') : Region i s' := by
+  simp only [Region] at hs ⊢
+  simp only [others, rel_choiceAll] at h
+  obtain ⟨⟨j, hji⟩, hj⟩ := h
+  simp only [steps, req, enter, exit] at hj
   action_simp
-  grind
+  rcases hj with h | h | h
+  all_goals
+    rcases h with ⟨t, ⟨hp, ht⟩, hs'⟩
+    subst t
+    subst s'
+    simp_all [setPc, upd.eq_1]
+    try grind
 
-/-- As long as process 1 has not entered the critical section, it stays in the
-region. Same statement as a hand-rolled prefix induction would give, but the
-six-way case analysis is replaced by the two interface lemmas above — process 1's
-own guarantee (`region_steps1`) and the environment's rely (`region_steps2`) — with
-`relyGuarantee_until` doing the induction. -/
-theorem region_until_goal (b : Behavior St) (hbeh : IsBehavior M b) (h0 : Region (b 0)) :
-    ∀ n, (∀ j, j ≤ n → (b j).pc1 ≠ 2) → Region (b n) := by
-  have hbeh' : ∀ n, rel (steps1 <|> steps2) (b n) (b (n + 1)) := by
-    intro n
-    have := hbeh n
-    rwa [M, Module.next] at this
+/-- As long as node `i` has not entered the critical section, it stays in the
+region. The six-way case analysis of the `Nat` version is replaced by the two
+interface lemmas above — node `i`'s guarantee (`region_steps_own`) and the
+environment's rely (`region_steps_others`) — with `relyGuarantee_until` doing the
+prefix induction. -/
+theorem region_until_goal {n : Nat} (i : Fin n) (b : Behavior (St n))
+    (hbeh : IsBehavior (M n) b) (h0 : Region i (b 0)) :
+    ∀ m, (∀ j, j ≤ m → (b j).pc i ≠ Pc.cs) → Region i (b m) := by
+  have hbeh' : ∀ m, rel (steps i <|> others i) (b m) (b (m + 1)) := by
+    intro m
+    exact (rel_next_iff i).mp (hbeh m)
   exact relyGuarantee_until hbeh'
-    (fun s s' hs h => region_steps1 hs h)
-    (fun s s' hs h => region_steps2 hs h)
+    (fun s s' hs h => region_steps_own i hs h)
+    (fun s s' hs h => region_steps_others i hs h)
     h0
 
-/-! ## The stepwise region obligations (shared by both liveness routes)
+/-! ## The stepwise obligations, shared by both liveness routes -/
 
-`region_steps1`/`region_steps2` are one-step facts. WF1's shape packages them as
-"every `M.next` step either reaches the goal or keeps `Region ∧ ¬goal`", which is
-exactly the hypothesis the fused rank rule `leadsTo_of_rank_region` also needs. -/
-
-/-- Progress: an `enter1` step from the region reaches the goal. -/
-theorem wf1_prog : ∀ (s s' : St), Region s → ¬ s.pc1 = 2 → rel enter1 s s' → s'.pc1 = 2 := by
-  intro s s' hs hq h
+/-- Progress: an `enter i` step from the region reaches the goal. -/
+theorem wf1_prog {n : Nat} (i : Fin n) :
+    ∀ s s', Region i s → ¬ s.pc i = Pc.cs → rel (enter i) s s' → s'.pc i = Pc.cs := by
+  intro s s' hs _ h
   simp only [Region] at hs
-  simp only [enter1] at h
+  simp only [enter] at h
   action_simp
-  grind
+  simp_all [setPc, upd.eq_1]
 
 /-- Environment: from the region, every module step either reaches the goal or
-stays in `Region ∧ ¬goal`. Reuses the two interface lemmas the R/G proof already
-had (`region_steps1`/`region_steps2`). -/
-theorem wf1_env : ∀ (s s' : St), Region s → ¬ s.pc1 = 2 → rel M.next s s' →
-    (Region s' ∧ ¬ s'.pc1 = 2) ∨ s'.pc1 = 2 := by
+stays in `Region i ∧ ¬goal`. Reuses the two interface lemmas. -/
+theorem wf1_env {n : Nat} (i : Fin n) :
+    ∀ s s', Region i s → ¬ s.pc i = Pc.cs → rel (next (n := n)) s s' →
+      (Region i s' ∧ ¬ s'.pc i = Pc.cs) ∨ s'.pc i = Pc.cs := by
   intro s s' hs _ h
-  have hbeh : rel (steps1 <|> steps2) s s' := by
-    simpa [M, next] using h
-  rw [rel_orElse] at hbeh
-  rcases hbeh with h1 | h2
-  · rcases region_steps1 hs h1 with hreg | hgoal
-    · exact Or.inl ⟨hreg, fun hc => by have h1' := hreg.1; omega⟩
+  rcases (rel_next_iff i).mp h with h | h
+  · rcases region_steps_own i hs h with hreg | hgoal
+    · exact Or.inl ⟨hreg, fun hc => by simp only [Region] at hreg; grind⟩
     · exact Or.inr hgoal
-  · have hreg := region_steps2 hs h2
-    exact Or.inl ⟨hreg, fun hc => by have h1' := hreg.1; omega⟩
+  · have hreg := region_steps_others i hs h
+    exact Or.inl ⟨hreg, fun hc => by simp only [Region] at hreg; grind⟩
 
-/-- Enabledness, now stated with `Enabled` and closed by the `enabled_*` simp
-set (the guard of `enter1` *is* the first two conjuncts of `Region`). -/
-theorem wf1_enabled : ∀ (s : St), Region s → ¬ s.pc1 = 2 → Enabled enter1 s := by
+/-- Enabledness: inside the region, `enter i`'s guard is exactly the first two
+conjuncts of `Region i`. -/
+theorem wf1_enabled {n : Nat} (i : Fin n) :
+    ∀ s, Region i s → ¬ s.pc i = Pc.cs → Enabled (enter i) s := by
   intro s hs _
   simp only [Region] at hs
-  simpa [enter1] using And.intro hs.1 hs.2.1
+  simpa [enter] using And.intro hs.1 hs.2.1
 
-/-! ## Liveness of process 1 -/
+/-! ## Liveness of node `i` (enter direction) -/
+
+/-- Rank: `1` until node `i` is in the critical section, `0` afterwards. -/
+def rank {n : Nat} (i : Fin n) (s : St n) : Nat := if s.pc i = Pc.cs then 0 else 1
+
+theorem rank_le_one {n : Nat} (i : Fin n) (s : St n) : rank i s ≤ 1 := by
+  unfold rank; split <;> omega
+
+theorem rank_eq_zero_iff {n : Nat} {i : Fin n} {s : St n} :
+    rank i s = 0 ↔ s.pc i = Pc.cs := by
+  unfold rank; split <;> simp_all
+
+theorem rank_pos_iff {n : Nat} {i : Fin n} {s : St n} :
+    rank i s > 0 ↔ s.pc i ≠ Pc.cs := by
+  unfold rank; split <;> simp_all
 
 /-- **Liveness, rank route.** A direct instance of the library's fused rule
-`leadsTo_of_rank_region`: `wf1_env` — the *stepwise* stability of
-`Region ∧ ¬goal` — is shared with the WF1 route below, and the manual
-`by_cases`/contradiction wrapper is gone (the library discharges the prefix
-induction once). `region_until_goal` above is the explicit
-`relyGuarantee_until` form of the same prefix fact. -/
-theorem leadsTo_enter1 (b : Behavior St) (hbeh : IsBehavior M b)
-    (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b :=
-  leadsTo_of_rank_region (T := M.next) (r := (· < ·)) Nat.lt_wfRel.wf
-    (fun _ _ _ => Nat.lt_trans) (μ := rank) hbeh hfair wf1_env
+`leadsTo_of_rank_region`: the *stepwise* stability `wf1_env` is shared with the
+WF1 route below, and the `by_cases`/prefix bookkeeping is discharged once inside
+the rule. -/
+theorem leadsTo_enter {n : Nat} (i : Fin n) (b : Behavior (St n))
+    (hbeh : IsBehavior (M n) b) (hfair : WeakFair (enter i) b) :
+    LeadsTo (Region i) (fun s => s.pc i = Pc.cs) b :=
+  leadsTo_of_rank_region (T := next (n := n)) (A := enter i) (r := (· < ·))
+    Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)
+    (P := Region i) (Q := fun s => s.pc i = Pc.cs) (I := Region i) (μ := rank i)
+    hbeh hfair (wf1_env i)
     (hreg := fun s hs _ => hs)
     (hdec := by
       intro s s' _ hq _
-      have hpos : rank s > 0 := rank_pos_iff.mpr hq
-      have hs : rank s = 1 := by have := rank_le_one s; omega
-      have hs' : rank s' ≤ 1 := rank_le_one s'
+      have hpos : rank i s > 0 := rank_pos_iff.mpr hq
+      have hs : rank i s = 1 := by have := rank_le_one i s; omega
+      have hs' : rank i s' ≤ 1 := rank_le_one i s'
       omega)
     (hprog := by
       intro s hs hq s' hstep
-      have hs1 : rank s = 1 := by
-        have := rank_le_one s
+      have hs1 : rank i s = 1 := by
+        have := rank_le_one i s
         have := rank_pos_iff.mpr hq
         omega
-      have hpc : s'.pc1 = 2 := by
-        simp only [Region] at hs
-        simp only [enter1] at hstep
-        action_simp
-        grind
+      have hpc : s'.pc i = Pc.cs := wf1_prog i s s' hs hq hstep
       rw [rank_eq_zero_iff.mpr hpc, hs1]
       omega)
     (henab := by
-      intro s hs _
-      simp only [Region] at hs
-      simpa [enter1] using And.intro hs.1 hs.2.1)
+      intro s hs hq
+      exact wf1_enabled i s hs hq)
 
-/-- The `Eventually` form: from the region, process 1 reaches the critical
+/-- The `Eventually` form: from the region, node `i` reaches the critical
 section. -/
-theorem eventually_enter1 (b : Behavior St) (hbeh : IsBehavior M b) (h0 : Region (b 0))
-    (hfair : WeakFair enter1 b) : ∃ N, (b N).pc1 = 2 :=
-  eventually_of_leadsTo (leadsTo_enter1 b hbeh hfair) h0
+theorem eventually_enter {n : Nat} (i : Fin n) (b : Behavior (St n))
+    (hbeh : IsBehavior (M n) b) (h0 : Region i (b 0))
+    (hfair : WeakFair (enter i) b) : ∃ N, (b N).pc i = Pc.cs :=
+  eventually_of_leadsTo (leadsTo_enter i b hbeh hfair) h0
 
-/-! ## The same `LeadsTo`, via the WF1 rule
-
-The same three obligations go straight into `leadsTo_of_wf1` — no measure, no
-region machinery. The rank route above additionally needed `rank`/`hdec`/`hprog`;
-this one needs none. -/
-
-/-- **The WF1 route to mutex liveness.** Same conclusion as `leadsTo_enter1`, but
-the proof is three interface lemmas plus the rule — no rank, no prefix induction,
-no contradiction wrapper. -/
-theorem leadsTo_enter1_wf1 (b : Behavior St) (hbeh : IsBehavior M b)
-    (hfair : WeakFair enter1 b) : LeadsTo Region (fun s => s.pc1 = 2) b :=
-  leadsTo_of_wf1 (M := M) (A := enter1) (P := Region) (Q := fun s => s.pc1 = 2)
-    hbeh hfair wf1_prog wf1_env wf1_enabled
+/-- **The WF1 route to the same `LeadsTo`.** No measure, no region machinery:
+three interface lemmas plus the rule. -/
+theorem leadsTo_enter_wf1 {n : Nat} (i : Fin n) (b : Behavior (St n))
+    (hbeh : IsBehavior (M n) b) (hfair : WeakFair (enter i) b) :
+    LeadsTo (Region i) (fun s => s.pc i = Pc.cs) b :=
+  leadsTo_of_wf1 (M := M n) (A := enter i) (P := Region i) (Q := fun s => s.pc i = Pc.cs)
+    hbeh hfair (wf1_prog i) (wf1_env i) (wf1_enabled i)
 
 /-! ## The complementary direction: leaving the critical section
 
-This one consumes the *safety* layer: the invariant "in the critical section
-implies holding the turn" comes from `Mutex.inv_step` through
-`always_of_preserves`, and it is what makes the variant behave (without it, the
-other process could not be ruled out). -/
+The safety layer is what makes this go through: "in the critical section implies
+holding the token" comes from `Mutex.inv_step` through `always_of_preserves`, and
+without it the other nodes' steps cannot be ruled out. -/
 
-/-- Variant: `1` while process 1 is in the critical section, `0` otherwise. -/
-def csRank (s : St) : Nat := if s.pc1 = 2 then 1 else 0
+/-- Variant: `1` while node `i` is in the critical section, `0` otherwise. -/
+def csRank {n : Nat} (i : Fin n) (s : St n) : Nat := if s.pc i = Pc.cs then 1 else 0
 
-/-- Being in the critical section is part of the safety invariant: it implies
-holding the turn. -/
-def InCS (s : St) : Prop := s.pc1 = 2 ∧ s.turn = 1
+/-- Being in the critical section, together with holding the token. -/
+def InCS {n : Nat} (i : Fin n) (s : St n) : Prop := s.pc i = Pc.cs ∧ s.turn = i
 
-theorem csRank_le_one (s : St) : csRank s ≤ 1 := by
+theorem csRank_le_one {n : Nat} (i : Fin n) (s : St n) : csRank i s ≤ 1 := by
   unfold csRank; split <;> omega
 
-theorem csRank_pos_iff {s : St} : csRank s > 0 ↔ s.pc1 = 2 := by
+theorem csRank_pos_iff {n : Nat} {i : Fin n} {s : St n} :
+    csRank i s > 0 ↔ s.pc i = Pc.cs := by
   unfold csRank; split <;> simp_all
 
-/-- **Liveness of leaving.** From any state in which process 1 is in the critical
-section, weak fairness for `exit1` eventually takes it out. -/
-theorem leadsTo_exit1 (b : Behavior St) (hbeh : IsBehavior M b)
-    (hinit : Mutex.init (b 0)) (hfair : WeakFair exit1 b) :
-    LeadsTo (fun s => s.pc1 = 2) (fun s => s.pc1 ≠ 2) b := by
-  -- the safety invariant holds at every time, and it gives `InCS` on request
-  have hAlways : Always Mutex.inv b :=
-    always_of_preserves hbeh Mutex.inv_step (Mutex.inv_init (b 0) hinit)
-  have hI : ∀ n, csRank (b n) > 0 → InCS (b n) := by
-    intro n hpos
-    have hpc : (b n).pc1 = 2 := csRank_pos_iff.mp hpos
-    exact ⟨hpc, (hAlways n).1 hpc⟩
-  have hdec : ∀ s s', InCS s → csRank s > 0 → rel M.next s s' → csRank s' ≤ csRank s := by
+/-- **Liveness of leaving.** From any state in which node `i` is in the critical
+section, weak fairness for `exit i` eventually takes it out. -/
+theorem leadsTo_exit {n : Nat} (i : Fin n) (b : Behavior (St n))
+    (hbeh : IsBehavior (M n) b) (hinit : (init (n := n)) (b 0))
+    (hfair : WeakFair (exit i) b) :
+    LeadsTo (fun s => s.pc i = Pc.cs) (fun s => s.pc i ≠ Pc.cs) b := by
+  -- the safety invariant holds at every time, and gives `InCS` on request
+  have hAlways : Always (inv (n := n)) b :=
+    always_of_preserves (M := M n) hbeh (inv_step (n := n)) (inv_init (b 0) hinit)
+  have hI : ∀ m, csRank i (b m) > 0 → InCS i (b m) := by
+    intro m hpos
+    have hpc : (b m).pc i = Pc.cs := csRank_pos_iff.mp hpos
+    exact ⟨hpc, hAlways m i hpc⟩
+  have hdec : ∀ s s', InCS i s → csRank i s > 0 →
+      rel (next (n := n)) s s' → csRank i s' ≤ csRank i s := by
     intro s s' _ hpos _
-    have hs : csRank s = 1 := by have := csRank_le_one s; omega
-    have hs' : csRank s' ≤ 1 := csRank_le_one s'
+    have hs : csRank i s = 1 := by have := csRank_le_one i s; omega
+    have hs' : csRank i s' ≤ 1 := csRank_le_one i s'
     omega
-  have hA : ∀ s, InCS s → csRank s > 0 → ∀ s', rel exit1 s s' → csRank s' < csRank s := by
+  have hA : ∀ s, InCS i s → csRank i s > 0 → ∀ s', rel (exit i) s s' →
+      csRank i s' < csRank i s := by
     intro s hs hpos s' hstep
-    have hs1 : csRank s = 1 := by have := csRank_le_one s; omega
-    have hpc : s'.pc1 ≠ 2 := by
-      obtain ⟨hpc1, -⟩ := hs
-      simp only [exit1] at hstep
+    have hs1 : csRank i s = 1 := by have := csRank_le_one i s; omega
+    have hpc : s'.pc i = Pc.out := by
+      simp only [exit] at hstep
       action_simp
-      grind
-    have hs' : csRank s' = 0 := by simp [csRank, hpc]
+      obtain ⟨t, ⟨hp, ht⟩, hs'⟩ := hstep
+      subst t
+      subst s'
+      simp [release, upd.eq_1]
+    have hs' : csRank i s' = 0 := by
+      unfold csRank; rw [hpc]; rfl
     omega
-  have henabled : ∀ s, InCS s → csRank s > 0 → Enabled exit1 s := by
+  have henabled : ∀ s, InCS i s → csRank i s > 0 → Enabled (exit i) s := by
     intro s hs _
-    simpa [exit1] using hs.1
-  refine (leadsTo_zero_of_weakFair_inv (M := M) (A := exit1) (μ := csRank) (I := InCS)
-    hbeh hI hdec hA henabled hfair).mono (fun _ _ => trivial) ?_
+    simpa [exit] using hs.1
+  refine (leadsTo_zero_of_weakFair_inv (M := M n) (A := exit i) (μ := csRank i)
+    (I := InCS i) hbeh hI hdec hA henabled hfair).mono (fun _ _ => trivial) ?_
   intro s hs
-  by_cases h : s.pc1 = 2
-  · have : csRank s = 1 := by simp [csRank, h]
+  by_cases h : s.pc i = Pc.cs
+  · have : csRank i s = 1 := by unfold csRank; rw [if_pos h]
     omega
   · exact h
 

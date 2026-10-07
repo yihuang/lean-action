@@ -111,9 +111,9 @@ theorem counter_always_nonneg (b : Behavior Nat) (hbeh : IsBehavior M b) :
 
 /-- Mutual exclusion of the protocol example holds at *every time* along any
 behavior, not just at reachable states. -/
-theorem mutex_always (b : Behavior Mutex.St) (hrun : IsRun Mutex.M b) :
-    Always (fun s => ¬ (s.pc1 = 2 ∧ s.pc2 = 2)) b :=
-  always_of_safe hrun Mutex.mutex_safe
+theorem mutex_always {n : Nat} (b : Behavior (Mutex.St n)) (hrun : IsRun (Mutex.M n) b) :
+    Always (Mutex.Mutex (n := n)) b :=
+  always_of_safe hrun (Mutex.mutex_safe (n := n))
 
 /-! ## Termination of a `while` loop -/
 
