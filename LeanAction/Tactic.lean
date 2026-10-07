@@ -18,7 +18,9 @@ The design is deliberately small and predictable:
     witness of `choiceAll`/`<|>` instead of the caller writing `rcases`;
   * the array-update helper `upd` is unfolded at the *function* level by
     `upd_fun` (see below).
-* `step` = `action_simp; try grind`: discharges a one-step obligation.
+* `action_step` = `action_simp; try grind`: discharges a one-step obligation.
+  (The name avoids a clash with a possible core/Std `step`; there is no `step`
+  alias — a `def step` is common in user models, e.g. `Examples/Frame`.)
 * `inv_induct` proves a `Preserves A I` goal by the canonical skeleton
   (`unfold Preserves; intro s hs s' hstep; action_simp`).
 * `safe_induct` proves `M.Safe P` by `Module.safe_of_preserves`, leaving exactly
@@ -82,11 +84,10 @@ macro "action_simp" : tactic =>
                -- inside `{ s with pc := upd s.pc i v }`.
                upd_fun] at *)
 
-/-- Discharge a one-step obligation: unfold the action semantics, then `grind`. -/
+/-- Discharge a one-step obligation: unfold the action semantics, then `grind`.
+Deliberately not named `step`: that is a plausible core/Std tactic name and it
+also collides notionally with the user models that define a `def step`. -/
 macro "action_step" : tactic => `(tactic| (action_simp; try grind))
-
-/-- Discharge a one-step obligation: unfold the action semantics, then `grind`. -/
-macro "step" : tactic => `(tactic| (action_simp; try grind))
 
 /-- The canonical skeleton for a one-step invariant (`Preserves A I`):
 introduce the binders and unfold the action semantics. Deliberately *does not*

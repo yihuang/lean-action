@@ -899,57 +899,56 @@ private def viewHead? (e : Expr) : Option Name :=
     | _ => none
   else none
 
-/-- The head constant of the action in a `rel A s s'` hypothesis, if there is
-one. This is how `rely_auto` finds `A` when the goal is the certificate's body
-`v.get s' = v.get s` rather than a `PreservesView A v`. -/
-private def actionHeadFromLocal? : TacticM (Option Name) := do
+/-- The head constants of the actions in the `rel A s s'` hypotheses. Usually
+there is one, but a WF1/`hstab` goal can carry both a component's own `rel A₁` and
+the environment's `rel A₂` at once; returning *all* of them lets `rely_auto` try
+every `(A, v)` pair instead of keying the first hypothesis. -/
+private def actionHeadsFromLocal : TacticM (List Name) := do
+  let mut acc : List Name := []
   for ldecl in (← getLCtx) do
     if ldecl.isImplementationDetail then continue
     let ty ← instantiateMVars ldecl.type
     if ty.isAppOfArity ``rel 4 then
       match (ty.getAppArgs[1]!).getAppFn with
-      | .const n _ => return some n
+      | .const n _ => if !acc.contains n then acc := acc ++ [n]
       | _ => pure ()
-  return none
+  return acc
 
 /-- Prove a frame-rely goal by certificate lookup: either `PreservesView A v`, or
-`v.get s' = v.get s` with a `rel A s s'` hypothesis. The certificate's side
-conditions are discharged by `assumption`/`grind`/`decide`. -/
+`v.get s' = v.get s` with (one or more) `rel Aᵢ s s'` hypotheses. Every
+`(Aᵢ, v)` pair registered is tried in turn, and the certificate's side conditions
+are discharged by `assumption`/`grind`/`decide`. -/
 elab "rely_auto" : tactic => do
   let g ← getMainGoal
   let env ← getEnv
   let ty ← instantiateMVars (← g.getType)
-  let mut action? : Option Name := none
-  let mut view? : Option Name := none
+  let mut pairs : List (Name × Name) := []
   if ty.isAppOfArity ``PreservesView 4 then
-    match (ty.getAppArgs[2]!).getAppFn with
-    | .const nA _ => action? := some nA
-    | _ => pure ()
-    match (ty.getAppArgs[3]!).getAppFn with
-    | .const nv _ => view? := some nv
-    | _ => pure ()
+    match (ty.getAppArgs[2]!).getAppFn, (ty.getAppArgs[3]!).getAppFn with
+    | .const nA _, .const nv _ => pairs := [(nA, nv)]
+    | _, _ => pure ()
   else if ty.isAppOfArity ``Eq 3 then
-    view? := (viewHead? ty.appFn!.appArg!).orElse (fun _ => viewHead? ty.appArg!)
-    action? ← actionHeadFromLocal?
-  let some nA := action?
-    | throwError "rely_auto: goal is neither `PreservesView A v` nor \
-        `v.get s' = v.get s` with a `rel A s s'` hypothesis"
-  let some nv := view?
-    | throwError "rely_auto: goal is neither `PreservesView A v` nor \
+    let view? := (viewHead? ty.appFn!.appArg!).orElse (fun _ => viewHead? ty.appArg!)
+    match view? with
+    | some nv => pairs := (← actionHeadsFromLocal).map (fun nA => (nA, nv))
+    | none => pure ()
+  if pairs.isEmpty then
+    throwError "rely_auto: goal is neither `PreservesView A v` nor \
         `v.get s' = v.get s` with a `rel A s s'` hypothesis"
   let st := relyCertExt.getState env
-  let certs := ((st.find? nA).bind (·.find? nv)).toList
-  if certs.isEmpty then
-    throwError "rely_auto: no `@[rely_cert]` theorem registered for the pair \
-      ({nA}, {nv})"
-  for cert in certs do
-    let saved ← getGoals
-    try
-      evalTactic (← `(tactic| (apply $(mkIdent cert) <;>
-        (first | assumption | grind | decide))))
-      return
-    catch _ => setGoals saved
-  throwError "rely_auto: certificate(s) {certs} did not apply"
+  let mut tried : List Name := []
+  for (nA, nv) in pairs do
+    let certs := ((st.find? nA).bind (·.find? nv)).toList
+    tried := tried ++ certs
+    for cert in certs do
+      let saved ← getGoals
+      try
+        evalTactic (← `(tactic| (apply $(mkIdent cert) <;>
+          (first | assumption | grind | decide))))
+        return
+      catch _ => setGoals saved
+  throwError "rely_auto: no registered certificate applied among the candidate \
+    pairs {pairs.map (fun (a, v) => s!"({a}, {v})")} (tried {tried})"
 
 /-! ### Generating frame certificates (`rely_defs`) -/
 
@@ -959,6 +958,12 @@ private partial def firstIdent? : Syntax → Option Name
   | .ident _ _ n _ => if n == .anonymous then none else some n
   | .node _ _ args => args.findSome? firstIdent?
   | _ => none
+
+/-- Collect every identifier in a syntax tree (`[f, g]` write-set groups). -/
+private partial def identsOf : Syntax → List Name
+  | .ident _ _ n _ => if n == .anonymous then [] else [n]
+  | .node _ _ args => args.toList.flatMap identsOf
+  | _ => []
 
 /-- Resolve a structure name from a type expression, trying the name as written,
 under the current namespace, and after stripping `_root_.`. -/
@@ -975,9 +980,10 @@ private def lastCompStr (n : Name) : String :=
   | .str _ s => s
   | _ => n.toString
 
-/-- `rely_defs T [a₁, …, aₖ] writes [f₁, …, fₖ]` — footprint metadata: the `i`-th
-action writes the field `fᵢ`. For each action and each generated field view
-`T.gView` with `g ≠ fᵢ`, the command emits and registers the certificate
+/-- `rely_defs T [a₁, …, aₖ] writes [[f₁, g₁], …, [fₖ, gₖ]]` — footprint metadata:
+the `i`-th action writes exactly the fields in its own `i`-th list (a singleton
+list for a single-field writer). For each action and each generated field view
+`T.gView` whose field is *not* in that list, the command emits and registers
 
 ```
 @[rely_cert] theorem T.<action>_preserves_<g>View : PreservesView <action> T.gView
@@ -988,13 +994,16 @@ proved by the standard template (`intro`; `unfold` the action and the view;
 `Tests/Relies.steps_preserves_pcView`, and `rely_auto` finds it by the head pair
 `(<action>, T.gView)` — the `field_disjoint` deriver's mechanism, with the write
 set as the footprint metadata (the disjointness deriver reads it off the field
-declarations; for actions it has to be stated).
+declarations; for actions it has to be stated). The per-action *list* matters:
+a multi-field writer such as the mutex `exit` (`pc` and `turn`) has to be able to
+say so, otherwise the deriver would emit a false certificate for the second
+field.
 
 This is for the monomorphic `view_defs` / `deriving ViewFields` fragment (no
 structure parameters, no index side conditions); parameterized certificates such
 as `Tests/Relies.steps_preserves_pcView` are written by hand and tagged
 `@[rely_cert]`. The use site must have `LeanAction` open. -/
-elab "rely_defs" ty:ident "[" acts:term,* "]" "writes" "[" flds:ident,* "]" :
+elab "rely_defs" ty:ident "[" acts:term,* "]" "writes" "[" sets:("[" ident,* "]"),* "]" :
     command => do
   let env ← getEnv
   let currNs ← getCurrNamespace
@@ -1005,17 +1014,17 @@ elab "rely_defs" ty:ident "[" acts:term,* "]" "writes" "[" flds:ident,* "]" :
   let relTy : Name :=
     if currNs == .anonymous then tyName else tyName.replacePrefix currNs .anonymous
   let actArr := acts.getElems
-  let fldArr := flds.getElems
-  if actArr.size != fldArr.size then
-    throwError "rely_defs: {actArr.size} action(s) but {fldArr.size} written field(s)"
+  let setArr := sets.getElems
+  if actArr.size != setArr.size then
+    throwError "rely_defs: {actArr.size} action(s) but {setArr.size} write-set(s)"
   for i in [:actArr.size] do
     let act := actArr[i]!
     let some actName := firstIdent? act.raw
       | throwError "rely_defs: cannot read an action name out of `{act}`"
-    let written := lastCompStr fldArr[i]!.getId
+    let written := (identsOf setArr[i]!).map lastCompStr
     for fldName in info.fieldNames do
       let fld := lastCompStr fldName
-      if fld == written then continue
+      if written.contains fld then continue
       let vName := relTy.str (fld ++ "View")
       if !(← getEnv).contains (currNs ++ vName) then continue
       let lemName := relTy.str (lastCompStr actName ++ s!"_preserves_{fld}View")

@@ -86,7 +86,7 @@ def bumpB : Action Pair := update (fun s => { s with b := s.b + 1 })
 -- `bumpA` writes `a` (so it preserves `bView`), `bumpB` writes `b` (so it
 -- preserves `aView`). NB: a custom command cannot follow a doc comment
 -- (DESIGN §11.6), hence the `/--`-free comment here.
-rely_defs Pair [bumpA, bumpB] writes [a, b]
+rely_defs Pair [bumpA, bumpB] writes [[a], [b]]
 
 /-- The generated certificate is found by `rely_auto` from `(bumpA, bView)`. -/
 example {s s' : Pair} (h : rel bumpA s s') : Pair.bView.get s' = Pair.bView.get s := by

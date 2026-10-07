@@ -26,7 +26,7 @@ A small Lean 4 library for **expressing actions (state-transition relations)** a
   `view_defs` / `lens_defs` commands generate `View`s / `Lens`es for structure
   fields (`import LeanAction.Derive`; use the commands for parameterized
   structures).
-* **Automation**: `action_simp` / `step` / `inv_induct` / `safe_induct`, finished
+* **Automation**: `action_simp` / `action_step` / `inv_induct` / `safe_induct`, finished
   off by `grind`.
 * **No external dependencies** (Mathlib is not needed), Lean `v4.33.0`.
 
@@ -150,14 +150,14 @@ lake build          # library + examples + LeanActionTests (Lean v4.33.0)
 | `ViewModule.sync` / `sync_preserves` / `sync_proj` | synchronous (lock-step) composition and its theorems |
 | `disjoint_auto` | closes `Disjoint` goals for structure-field views |
 | `PreservesView A v` / `@[rely_cert]` / `rely_auto` | frame-rely certificates: "this action leaves this view unchanged", looked up by the `(action, view)` head pair |
-| `rely_defs T [a₁, …] writes [f₁, …]` | emit + register those certificates from the action footprints (monomorphic `ViewFields` structures) |
+| `rely_defs T [a₁, …] writes [[f₁, g₁], …]` | emit + register those certificates from the action footprints (one write-set per action, monomorphic `ViewFields` structures) |
 
 ### Automation
 
 | Macro | Purpose |
 | --- | --- |
 | `action_simp` | unfold action semantics (`rel_*` lemma set, `at *`) **and normalize**: collapse `∃ t, (P s ∧ t = s) ∧ Q t`, push the `choiceAll`/`<|>` witness disjunction out, unfold `upd` at the function level (`upd_fun`) |
-| `step` | `action_simp; try grind`, one step obligation |
+| `action_step` | `action_simp; try grind`, one step obligation (named `action_step`, not `step`: see DESIGN §11.6) |
 | `inv_induct` | the canonical skeleton for `Preserves A I` |
 | `safe_induct` / `safe_induct using I` | prove `M.Safe P` (optionally with an auxiliary invariant) |
 
@@ -171,7 +171,7 @@ LeanAction/Nondet.lean   Prop-valued nondeterminism monad
 LeanAction/Action.lean   the DSL: ActionM / Action / primitives / combinators / rel lemmas
 LeanAction/Lens.lean     View / Lens / focus / product lifts / interleave
 LeanAction/Proof.lean    Reach / Preserves / Hoare / Module / Refines
-LeanAction/Tactic.lean   action_simp / step / inv_induct / safe_induct
+LeanAction/Tactic.lean   action_simp / action_step / inv_induct / safe_induct
 LeanAction/Derive.lean   view_defs / lens_defs commands (needs `import Lean`)
 LeanAction/Liveness.lean Always / Eventually / LeadsTo, behaviors, fairness, rank arguments
 LeanAction/Frame.lean    shared-state composition: Disjoint, frame theorem, ViewModule.parallel

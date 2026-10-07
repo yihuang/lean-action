@@ -35,7 +35,7 @@ LeanAction/Nondet.lean   Nondet α := α → Prop, with Monad/Alternative/Member
 LeanAction/Action.lean   the core DSL: ActionM, Action, primitives, combinators, rel lemmas
 LeanAction/Lens.lean     modularity: Lens, View, focus, product lifts, interleave
 LeanAction/Proof.lean    proof layer: Reach, Preserves, Hoare, Module, Refines
-LeanAction/Tactic.lean   automation: action_simp, step, inv_induct, safe_induct
+LeanAction/Tactic.lean   automation: action_simp, action_step, inv_induct, safe_induct
 LeanAction/Liveness.lean temporal layer: Always / Eventually / LeadsTo, behaviors, fairness, ranks
 LeanAction/Derive.lean   metaprogramming: view_defs / lens_defs commands
 LeanAction/Frame.lean    shared-state composition: Disjoint (frame condition), frame theorem, parallel
@@ -476,18 +476,18 @@ been unfolded", or "`grind` cannot derive this arithmetic fact").
 | Macro | Purpose |
 | --- | --- |
 | `action_simp` | `simp (config := {failIfUnchanged := false}) only [rel_*, ActionM.*_apply, Prod.mk.injEq, exists_and_left, exists_eq_left, exists_eq, exists_or, and_assoc, upd_fun, ...] at *`; unfold the action semantics to first order **and normalize** the result (collapse the `∃ t, (P s ∧ t = s) ∧ Q t` shape, push the `choiceAll`/`<|>` witness disjunction out, unfold `upd` at the function level) |
-| `step` | `action_simp; try grind`: one step obligation |
-| `inv_induct` | `unfold Preserves; intro s hs s' hstep; step`: the canonical `Preserves` skeleton |
+| `action_step` | `action_simp; try grind`: one step obligation |
+| `inv_induct` | `unfold Preserves; intro s hs s' hstep; action_simp`: the canonical `Preserves` skeleton |
 | `safe_induct` | `apply Module.safe_of_preserves`, leaving the two goals `init ⊆ P` and `Preserves next P` |
 
 Two implementation details matter:
 
 * `failIfUnchanged := false`: `action_simp` must not error when there is no `rel` to
-  unfold, otherwise `try step` and subsequent manual unfolding fight each other;
+  unfold, otherwise `try action_step` and subsequent manual unfolding fight each other;
 * do **not** use `·` bullets inside a macro: an early version had `·` in a macro
   body, and the caller's `·` competed with the macro's goal focusing, producing the
   bizarre combination of "unsolved goals" and "No goals to be solved". Now the
-  pattern is `apply ... <;> try step`, leaving the goal structure to the caller.
+  pattern is `apply ... <;> try action_step`, leaving the goal structure to the caller.
 
 ### 7.3 A typical user proof
 
@@ -871,7 +871,7 @@ descends through the two projections" (`reach_interleave_fst/snd`).
   metaprogramming that injects `s`/`hs`/`hq`/`h` into the user's context, with
   the shadowing hazards that implies — for about a dozen `intro` lines across the
   whole repo. The hygienic alternatives automate the tail instead (`action_simp`,
-  `step` = `action_simp; try grind`), and that is what the library keeps.
+  `action_step` = `action_simp; try grind`), and that is what the library keeps.
 
 ### 11.5 Lessons from liveness of a shared-memory protocol
 
@@ -909,6 +909,14 @@ it the other nodes' steps cannot be ruled out and the variant's monotonicity
 cannot be established.
 
 ### 11.6 Generators: why a term macro fails and a command succeeds
+
+* **Tactic macro names must be chosen against the stdlib, not only the repo.**
+  The one-step macro was originally `step`; that is a plausible core/Std tactic
+  name and it also reads like the user models' own `def step` (`Examples/Frame`,
+  `Examples/Machine`), so it is now **`action_step`** and there is no `step`
+  alias — keeping one would keep the clash, and a silently shadowed stdlib
+  `step` is exactly the kind of failure that is hard to trace. (The alias lived
+  for one round; nothing in the repo had ever called it as a tactic.)
 
 Automatic generation of `Lens`/`View` took two detours before a command solved it:
 
@@ -1064,10 +1072,17 @@ difference:
   (`i ≠ j`) to `assumption`/`grind`. Two design points: (1) there is deliberately
   **no semantic fallback** (contrast `disjoint_auto`'s `cases; rfl`) — the action
   has to be unfolded, which only the caller knows how to do, so a miss is a loud
-  "no `@[rely_cert]` for (A, v)"; (2) `rely_defs T [a₁, …] writes [f₁, …]` emits the
-  certificates for the *other* fields from the action footprints, so the generated
-  shape is exactly `Tests/Relies.steps_preserves_pcView` and the *use* site is one
-  `rely_auto` (`Tests/Relies.steps_respects_frame_rely`). "Automatic discovery"
+  "no `@[rely_cert]` for (A, v)"; (2) `rely_defs T [a₁, …] writes [[f₁, g₁], …]`
+  emits the certificates for the *other* fields from the action footprints — one
+  **write-set per action**, so a multi-field writer (the mutex `exit`: `pc` and
+  `turn`) can be stated without the deriver emitting a false certificate for its
+  second field — and the generated shape is exactly
+  `Tests/Relies.steps_preserves_pcView`, the *use* site one `rely_auto`
+  (`Tests/Relies.steps_respects_frame_rely`); (3) on the read side `rely_auto`
+  collects the head of **every** `rel Aᵢ s s'` hypothesis, not just the first, so a
+  WF1/`hstab` goal that carries both the component's own relation and the
+  environment's tries both `(Aᵢ, v)` pairs (the failure mode stays loud: the error
+  lists the candidate pairs and the certificates it tried). "Automatic discovery"
   therefore means: generate + look up the **frame** half, and leave the
   **constraint** half (`s'.v ≤ s.v`) to the user, which is precisely the boundary
   `Tests/Relies` documents. A deriver that also *infers* the footprint instead of
