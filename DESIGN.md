@@ -1090,6 +1090,19 @@ difference:
   view) pair, skip the failures) does not work, because a failed `elabCommand`
   *logs* its error and returns without throwing, so the deriver cannot suppress
   the failed pair's message and the whole command errors.
+* **A fallback hides an untested channel.** Three separate certificate bugs —
+  the `Disjoint.symm` application was structurally malformed (`mkApp` put the
+  certificate into `symm`'s implicit `σ` slot), a certificate with a side
+  condition left the main goal assigned instead of committing or rolling back,
+  and the "no certificate, using the semantic channel" trace was suppressed by
+  a syntactically-plausible-but-absent name — all survived because *no test had
+  a goal the semantic fallback could not close*. `Tests/Certificates` now has
+  "opaque view" cases (an `upd`-indexed view needs `upd_comm`, so `cases; rfl`
+  fails) for the reverse/`symm`, side-condition and trace paths, and the
+  `LensFields` naming-convention test asserts on the trace because there the
+  fallback genuinely *can* close the goal. **Conclusion: for every channel with
+  a fallback, at least one test goal must be unreachable by the fallback** —
+  otherwise `green` only means the fallback is still working.
 * **`sync` hit the same defeq trap again**: `rel`'s equality is `z = (Done.mk, x)`
   while one wants to say `s' = x`, and the two need `Prod.mk.injEq`, not defeq. That
   is the third time (`rel_focusView`, `rel_lift`, now `rel_sync`), and the fix is the

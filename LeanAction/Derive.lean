@@ -182,8 +182,27 @@ private def emitViewLikes (lens : Bool) (tyName : Name) (tyStr : String)
               let args : Array (TSyntax `term) := (allArgs.extract 0 arity).map (⟨·⟩)
               `(($vId $args* : $(mkIdent `LeanAction.View) $tyTerm _))
           else
-            let vId := mkIdent (relTy.str (fld ++ "Lens"))
-            `(($(mkIdent `LeanAction.View.ofLens) $vId : $(mkIdent `LeanAction.View) $tyTerm _))
+            -- A `LensFields`-only structure has no `T.fView`; the certificate
+            -- uses `View.ofLens T.fLens`. Same arity handling as the view
+            -- branch: with `variable (γ : Type)` the lens takes `γ` explicitly,
+            -- so the bare name is a function and has to be applied.
+            let vName := relTy.str (fld ++ "Lens")
+            let vId := mkIdent vName
+            let arity : Nat :=
+              match (← getEnv).find? (currNs ++ vName) with
+              | some ci => explicitArity ci.type
+              | none => 0
+            if arity == 0 then
+              `(($(mkIdent `LeanAction.View.ofLens) $vId : $(mkIdent `LeanAction.View) $tyTerm _))
+            else
+              let (_, allArgs) := flatApp tyTerm.raw
+              if allArgs.size < arity then
+                throwError "view_defs: cannot reconstruct the type arguments of \
+                  `{tyName}` for the disjointness certificate; spell the full \
+                  application out (e.g. `view_defs (Foo α β)`)"
+              let args : Array (TSyntax `term) := (allArgs.extract 0 arity).map (⟨·⟩)
+              `(($(mkIdent `LeanAction.View.ofLens) ($vId $args*)
+                  : $(mkIdent `LeanAction.View) $tyTerm _))
         let fv ← mkViewRef f
         let gv ← mkViewRef g
         let cmd ← `(theorem $(mkIdent lemName) $binders* :

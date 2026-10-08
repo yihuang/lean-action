@@ -11,7 +11,7 @@ The design is deliberately small and predictable:
   first-order statement about states. There is no search here, only unfolding and
   normalization; the normalization half is what keeps the result usable at scale:
   * the `∃ t, (P s ∧ t = s) ∧ Q t` shape produced by `rel_seq` +
-    `rel_guard`/`rel_update` is collapsed to `P s ∧ Q t`
+    `rel_guard`/`rel_update` is collapsed to `P s ∧ Q s`
     (`exists_and_left`/`exists_eq_left`/`exists_eq`/`and_assoc`), and
     `∃ a, B₁ a ∨ B₂ a` is pushed out (`exists_or`) so that a disjunction of
     *concrete* branches remains — this is what lets `grind` case-split the
