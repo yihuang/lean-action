@@ -183,6 +183,12 @@ def set (v : σ) : Action σ := fun _ z => z = (Done.mk, v)
 /-- Perform any transition permitted by the relation `R`. -/
 def nondet (R : Rel σ σ) : Action σ := fun s z => R s z.2
 
+/-- The *non-stuttering* part of `A`: the `A`-steps that actually change the
+state. This is TLA's `⟨A⟩_v` with the whole state as the variable, written
+`⟨A⟩`. Fairness of `⟨A⟩` (not of `A`) is what the stuttering-safe WF1 rule
+consumes. -/
+def nonStutter (A : Action σ) : Action σ := fun s z => rel A s z.2 ∧ z.2 ≠ s
+
 /-- Angelic choice: `A <|> B` may behave as `A` or as `B`. -/
 def choice (A B : Action σ) : Action σ := fun s z => A s z ∨ B s z
 
@@ -245,6 +251,9 @@ first-order goal about states. -/
 @[simp] theorem rel_nondet {R : Rel σ σ} {s s' : σ} :
     rel (nondet R : Action σ) s s' ↔ R s s' := Iff.rfl
 
+@[simp] theorem rel_nonStutter {A : Action σ} {s s' : σ} :
+    rel (nonStutter A) s s' ↔ rel A s s' ∧ s' ≠ s := Iff.rfl
+
 /-- Monadic `modify` seen as a transition relation. -/
 @[simp] theorem rel_modify {f : σ → σ} {s s' : σ} :
     rel (ActionM.modify f) s s' ↔ s' = f s := by
@@ -297,6 +306,25 @@ theorem rel_bind_action {A : Action σ} {f : Done → Action σ} {s s' : σ} :
 @[simp] theorem rel_choiceAll {B : α → Action σ} {s s' : σ} :
     rel (choiceAll B) s s' ↔ ∃ a, rel (B a) s s' := Iff.rfl
 
+/-- **Binary split of `choiceAll`.** A step of `choiceAll f` is a step of `f i`, or
+a step of `choiceAll` over the indices other than `i`. This is the bridge that
+lets the binary rely/guarantee rules (`relyGuarantee_until`,
+`preserves_of_guarantees`, `Compatible`) apply to an `n`-ary choice: take the
+component's own action as `f i` and the environment as the subtype choice. -/
+theorem rel_choiceAll_split {ι : Type u} [DecidableEq ι] {f : ι → Action σ} {i : ι}
+    {s s' : σ} :
+    rel (choiceAll f) s s' ↔
+      rel (f i) s s' ∨ rel (choiceAll (fun j : {j : ι // j ≠ i} => f j.1)) s s' := by
+  simp only [rel_choiceAll]
+  constructor
+  · rintro ⟨j, hj⟩
+    by_cases h : j = i
+    · subst h; exact Or.inl hj
+    · exact Or.inr ⟨⟨j, h⟩, hj⟩
+  · rintro (h | ⟨⟨j, _⟩, hj⟩)
+    · exact ⟨i, h⟩
+    · exact ⟨j, hj⟩
+
 @[simp] theorem rel_iterate_zero {A : Action σ} {s s' : σ} :
     rel (iterate A 0) s s' ↔ s' = s := by
   simp [iterate]
@@ -319,5 +347,86 @@ closure would not terminate. Use it explicitly at the start of an induction. -/
 theorem rel_loop {P : σ → Prop} {A : Action σ} {s s' : σ} :
     rel (loop P A) s s' ↔
       Rel.ReflTransGen (fun a b => P a ∧ rel A a b) s s' ∧ ¬ P s' := Iff.rfl
+
+/-! ### Enabledness: the "other half" of the `rel_*` set
+
+`rel_*` normalizes *what happened*; `enabled_*` normalizes *what can happen*.
+This is the shape TLAPS's `ENABLED` rewrite rules play: fairness and
+leads-to rules (`WeakFair`, `leadsTo_of_wf1`) consume enabledness facts, and
+every primitive/combinator gets an `@[simp] enabled_*` lemma whose RHS
+mentions neither `Enabled` nor `rel`, so enabledness obligations collapse
+under the same `action_simp; grind` pipeline as everything else. -/
+
+/-- `A` is enabled at `s`: it has at least one possible successor. -/
+def Enabled (A : Action σ) : Nondet σ := fun s => ∃ s', rel A s s'
+
+@[simp] theorem enabled_skip {s : σ} : Enabled (skip : Action σ) s ↔ True := by
+  simp [Enabled]
+
+@[simp] theorem enabled_fail {s : σ} : Enabled (fail : Action σ) s ↔ False := by
+  simp [Enabled]
+
+@[simp] theorem enabled_failure {s : σ} : Enabled (failure : Action σ) s ↔ False := by
+  simp [Enabled]
+
+@[simp] theorem enabled_guard {P : σ → Prop} {s : σ} :
+    Enabled (guard P : Action σ) s ↔ P s := by
+  simp [Enabled]
+
+@[simp] theorem enabled_assert {P : σ → Prop} {s : σ} :
+    Enabled (assert P : Action σ) s ↔ P s := by
+  simp [Enabled]
+
+@[simp] theorem enabled_assume {P : σ → Prop} {s : σ} :
+    Enabled (assume P : Action σ) s ↔ P s := by
+  simp [Enabled]
+
+@[simp] theorem enabled_update {f : σ → σ} {s : σ} :
+    Enabled (update f : Action σ) s ↔ True := by
+  simp [Enabled]
+
+@[simp] theorem enabled_set {v s : σ} : Enabled (set v : Action σ) s ↔ True := by
+  simp [Enabled]
+
+@[simp] theorem enabled_nondet {R : Rel σ σ} {s : σ} :
+    Enabled (nondet R : Action σ) s ↔ ∃ s', R s s' := by
+  simp [Enabled]
+
+@[simp] theorem enabled_nonStutter {A : Action σ} {s : σ} :
+    Enabled (nonStutter A) s ↔ ∃ s', rel A s s' ∧ s' ≠ s := by
+  simp [Enabled]
+
+@[simp] theorem enabled_orElse {A B : Action σ} {s : σ} :
+    Enabled (A <|> B) s ↔ Enabled A s ∨ Enabled B s := by
+  simp only [Enabled, rel_orElse]
+  constructor
+  · rintro ⟨s', h | h⟩
+    · exact Or.inl ⟨s', h⟩
+    · exact Or.inr ⟨s', h⟩
+  · rintro (⟨s', h⟩ | ⟨s', h⟩)
+    · exact ⟨s', Or.inl h⟩
+    · exact ⟨s', Or.inr h⟩
+
+@[simp] theorem enabled_choice {A B : Action σ} {s : σ} :
+    Enabled (choice A B) s ↔ Enabled A s ∨ Enabled B s :=
+  enabled_orElse
+
+@[simp] theorem enabled_seq {A B : Action σ} {s : σ} :
+    Enabled (seq A B) s ↔ ∃ t, rel A s t ∧ Enabled B t := by
+  simp only [Enabled, rel_seq]
+  constructor
+  · rintro ⟨u, t, h1, h2⟩
+    exact ⟨t, h1, u, h2⟩
+  · rintro ⟨t, h1, u, h2⟩
+    exact ⟨u, t, h1, h2⟩
+
+@[simp] theorem enabled_choiceAll {B : α → Action σ} {s : σ} :
+    Enabled (choiceAll B) s ↔ ∃ a, Enabled (B a) s := by
+  simp only [Enabled, rel_choiceAll]
+  constructor
+  · rintro ⟨s', a, h⟩
+    exact ⟨a, s', h⟩
+  · rintro ⟨a, s', h⟩
+    exact ⟨s', a, h⟩
 
 end LeanAction

@@ -26,7 +26,7 @@ A small Lean 4 library for **expressing actions (state-transition relations)** a
   `view_defs` / `lens_defs` commands generate `View`s / `Lens`es for structure
   fields (`import LeanAction.Derive`; use the commands for parameterized
   structures).
-* **Automation**: `action_simp` / `step` / `inv_induct` / `safe_induct`, finished
+* **Automation**: `action_simp` / `action_step` / `inv_induct` / `safe_induct`, finished
   off by `grind`.
 * **No external dependencies** (Mathlib is not needed), Lean `v4.33.0`.
 
@@ -83,20 +83,20 @@ Complete, compiling examples live in `Examples/`:
 
 | File | Contents |
 | --- | --- |
-| `Examples/Basic.lean` | `do` DSL, `<|>`, `while` loops, nested-field focus via `View.comp` |
+| `Examples/Basic.lean` | `do` DSL, `<|>`, `while` loops, nested-field focus via `View.comp`, and the deriver's pairwise `Disjoint` certificates closed by `disjoint_auto` |
 | `Examples/Parallel.lean` | `Module.interleave`, refinement (`Refines`) with stuttering |
-| `Examples/Mutex.lean` | shared-variable protocol: mutual exclusion from six process steps, constructive reachability, a proof that a process is blocked |
+| `Examples/Mutex.lean` | N-node shared-variable protocol: nodes indexed by `Fin n`, an inductive per-node `pc` (`out`/`wait`/`cs`), mutual exclusion from `choiceAll` over the node steps, constructive reachability, a proof that a waiting node is blocked |
 | `Examples/Hoare.lean` | partial correctness: `iterate`, `while` (`Hoare.loop`), `nondet`, `focusView` |
 | `Examples/DataRefinement.lean` | non-identity abstraction map, safety transfer, implementation-only invariant, run lifting |
 | `Examples/Machine.lean` | stack machine with the program in the state: dispatch by `choiceAll`, safety for *every* program, a concrete run |
 | `Examples/Liveness.lean` | inevitability under fairness, a theorem that **liveness fails without fairness**, `Always`-form mutual exclusion, loop termination and total correctness |
-| `Examples/MutexLiveness.lean` | liveness of the shared-memory protocol: a region-restricted (not globally monotone) variant, both "enter" and "leave" directions, the latter using safety for region stability |
+| `Examples/MutexLiveness.lean` | liveness of the N-node protocol: the step split `next = steps i <|> others i`, a region-restricted (not globally monotone) variant, both "enter" and "leave" directions, the latter using safety for region stability; the enter direction is proved twice (rank argument and the rank-free `leadsTo_of_wf1`) |
 | `Examples/ParallelLiveness.lean` | liveness of an interleaving: projection + fairness transfer + sequence-level rank argument ⇒ product liveness; a counterexample shows the fairness hypothesis is needed |
-| `Examples/Frame.lean` | disjoint footprints on a shared record: frame theorem (each half proved on its own state type), composed liveness, synchronous composition, and `¬ Disjoint` explaining why the mutex protocol is outside this layer |
-| `Examples/RelyGuarantee.lean` | overlapping footprints composed by interfaces: each component answers only to its own rely/guarantee |
+| `Examples/Frame.lean` | disjoint footprints on a shared record: frame theorem (each half proved on its own state type), composed liveness, synchronous safety **and liveness** (`sync`, `two_sync_live` — no projection/stutter machinery needed), nested/indexed footprints (`Disjoint.comp_of_disjoint`, `upd` + an `i ≠ j` side condition), conditional disjointness (`DisjointUnder` and aliasing freedom), and `¬ Disjoint` explaining why the mutex protocol is outside this layer |
+| `Examples/RelyGuarantee.lean` | overlapping footprints composed by interfaces: each component answers only to its own rely/guarantee, the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) that needs no explicit `Rel`, and the liveness counterpart (`leadsTo_of_rank_region` with an **opaque** environment known only by its rely `s'.v ≤ s.v`) |
 
 ```bash
-lake build          # builds the library and the examples (Lean v4.33.0)
+lake build          # library + examples + LeanActionTests (Lean v4.33.0)
 ```
 
 ---
@@ -137,7 +137,8 @@ lake build          # builds the library and the examples (Lean v4.33.0)
 | `leadsTo_zero_of_weakFair(_inv)` | rank argument: inevitability under fairness (`_inv` only requires its hypotheses inside an invariant region) |
 | `loop_can_exit` | a `while` loop has a terminating run (with `Hoare.loop`: total correctness) |
 | `eventually_zero_of_strongFair_inv` | the strong-fairness version of the rank argument (`StrongFair ⟹ WeakFair`) |
-| `eventually_zero_of_seq` | sequence-level rank argument (stuttering allowed — needed for projected behaviors) |
+| `eventually_zero_of_seq` | sequence-level rank argument (stuttering allowed — needed for projected behaviors); the `Nat`/`μ > 0`-conditioned form of `wf_progress_false` |
+| `leadsTo_of_rank_region` / `leadsTo_of_rank_wf` | the fused rank rule on an explicit relation `r`, and on the registered `WFTrans` order (the `Nat`/`<` case) |
 | `interleave_leadsTo` | liveness composition for interleaving (with `forward_stable_of_preserves`, `weakFair_fst/snd_of_weakFair`) |
 | `deriving ViewFields, LensFields` | generates `Struct.fView` / `Struct.fLens` per field (absolute names, works inside namespaces) |
 | `view_defs` / `lens_defs` | generate `View` / `Lens` with the type given as a term (the path for parameterized structures) |
@@ -148,13 +149,15 @@ lake build          # builds the library and the examples (Lean v4.33.0)
 | `relyGuarantee_until` | prefix stability ("a region holds until the goal is reached"), the temporal twin of rely/guarantee |
 | `ViewModule.sync` / `sync_preserves` / `sync_proj` | synchronous (lock-step) composition and its theorems |
 | `disjoint_auto` | closes `Disjoint` goals for structure-field views |
+| `PreservesView A v` / `@[rely_cert]` / `rely_auto` | frame-rely certificates: "this action leaves this view unchanged", looked up by the `(action, view)` head pair |
+| `rely_defs T [a₁, …] writes [[f₁, g₁], …]` | emit + register those certificates from the action footprints (one write-set per action, monomorphic `ViewFields` structures) |
 
 ### Automation
 
 | Macro | Purpose |
 | --- | --- |
-| `action_simp` | unfold action semantics (`rel_*` lemma set, `at *`) |
-| `step` | `action_simp; try grind`, one step obligation |
+| `action_simp` | unfold action semantics (`rel_*` lemma set, `at *`) **and normalize**: collapse `∃ t, (P s ∧ t = s) ∧ Q t`, push the `choiceAll`/`<|>` witness disjunction out, unfold `upd` at the function level (`upd_fun`) |
+| `action_step` | `action_simp; try grind`, one step obligation (named `action_step`, not `step`: see DESIGN §11.6) |
 | `inv_induct` | the canonical skeleton for `Preserves A I` |
 | `safe_induct` / `safe_induct using I` | prove `M.Safe P` (optionally with an auxiliary invariant) |
 
@@ -168,13 +171,20 @@ LeanAction/Nondet.lean   Prop-valued nondeterminism monad
 LeanAction/Action.lean   the DSL: ActionM / Action / primitives / combinators / rel lemmas
 LeanAction/Lens.lean     View / Lens / focus / product lifts / interleave
 LeanAction/Proof.lean    Reach / Preserves / Hoare / Module / Refines
-LeanAction/Tactic.lean   action_simp / step / inv_induct / safe_induct
+LeanAction/Tactic.lean   action_simp / action_step / inv_induct / safe_induct
 LeanAction/Derive.lean   view_defs / lens_defs commands (needs `import Lean`)
 LeanAction/Liveness.lean Always / Eventually / LeadsTo, behaviors, fairness, rank arguments
 LeanAction/Frame.lean    shared-state composition: Disjoint, frame theorem, ViewModule.parallel
-Examples/                compiling examples
+Examples/                compiling examples (the API in use)
+Tests/                   LeanActionTests: compile-time regression tests for the library
 DESIGN.md                design document (semantics, automation, limits, roadmap)
 ```
+
+The `Tests/` modules are the project's unit tests. They are proofs, so
+*compiling them is running them*: `lake build` fails if any lemma that used to
+hold stops holding. They are deliberately thin — each one records a small
+obligation that a library change once broke (the two-channel `disjoint_auto`,
+`DisjointUnder`, WF1, `derivedRely`, …) and consume only the public API.
 
 ## Examples as experiments
 
@@ -193,15 +203,27 @@ variables being outside `interleave`, …) are written up in
 * `Nondet` is `Prop`-valued and therefore **not computable**: this library is a
   specification/proof layer. Executing would need a separate `List`/`Multiset`
   monad (`DESIGN.md` §9.1).
-* The temporal layer only covers **rank-argument** liveness (`Always`/`Eventually`/
-  `LeadsTo` + weak/strong fairness + `while` termination + region-restricted
-  variants for shared-memory protocols). There is no fixpoint calculus and no
-  compassion, and invariant regions still have to be supplied by hand
-  (`DESIGN.md` §9.2, §11.5).
+* The temporal layer has **rank arguments** (`Always`/`Eventually`/`LeadsTo` + weak/
+  strong fairness + `while` termination + region-restricted variants for
+  shared-memory protocols) **and a rank-free WF1 rule** (`leadsTo_of_wf1`, at an
+  arbitrary step relation, with a non-stuttering `⟨A⟩` variant), fused by
+  `leadsTo_of_rank_region` (WF1's stepwise stability + a well-founded rank
+  `μ : σ → W`, no call-site `by_cases`; `leadsTo_of_rank_wf` is the same rule on a
+  registered `WFTrans` order, so the `Nat` case passes no order facts), plus basic
+  `LeadsTo` algebra. There is no
+  fixpoint calculus and no compassion, and invariant regions still have to be
+  supplied by hand (`DESIGN.md` §9.2, §11.4, §11.5).
 * Parallelism has four composition modes (interleaving over product or shared
-  state, rely/guarantee, synchronous). Still missing: automatic discovery of
-  relies, liveness for synchronous composition, and footprint inference beyond
-  `disjoint_auto` (`DESIGN.md` §5.4, §9.3).
+  state, rely/guarantee, synchronous). For the safety fragment the rely is now
+  *derived* (`derivedRely`/`preserves_of_guarantees`), so it need not be written
+  by hand; an explicit `Rel` remains only for value-constraint interfaces, and the
+  liveness rely/guarantee discharge is `leadsTo_of_rank_region` (`hstab`/`hdec`
+  split by component). Footprint inference covers flat structures (deriver
+  certificates) and composes (`Disjoint.comp_of_disjoint`), with the array-like
+  case handled conditionally (`DisjointUnder`); arbitrary hand-written views still
+  need hand-written proofs. Synchronous liveness is now covered by
+  `Examples/Frame.two_sync_live` (the joint step is `T`, so no new rule is
+  needed).
 * Field `View`s/`Lens`es can be generated by `deriving ViewFields, LensFields`
   (recommended, absolute names); for parameterized structures use the
   `view_defs`/`lens_defs` commands (note: no doc comment may precede a custom

@@ -35,7 +35,7 @@ LeanAction/Nondet.lean   Nondet α := α → Prop, with Monad/Alternative/Member
 LeanAction/Action.lean   the core DSL: ActionM, Action, primitives, combinators, rel lemmas
 LeanAction/Lens.lean     modularity: Lens, View, focus, product lifts, interleave
 LeanAction/Proof.lean    proof layer: Reach, Preserves, Hoare, Module, Refines
-LeanAction/Tactic.lean   automation: action_simp, step, inv_induct, safe_induct
+LeanAction/Tactic.lean   automation: action_simp, action_step, inv_induct, safe_induct
 LeanAction/Liveness.lean temporal layer: Always / Eventually / LeadsTo, behaviors, fairness, ranks
 LeanAction/Derive.lean   metaprogramming: view_defs / lens_defs commands
 LeanAction/Frame.lean    shared-state composition: Disjoint (frame condition), frame theorem, parallel
@@ -188,6 +188,13 @@ to reduce any composite action to a first-order statement about states, and to
 terminate while doing so. That is the foundation of all the automation; there is no
 custom rewrite engine anywhere else.
 
+One lemma sits just outside the `rel_*` set because it is a *case split* rather
+than an unfolding: `rel_choiceAll_split` (`[DecidableEq ι]`) says
+`rel (choiceAll f) s s'` is `rel (f i) s s'` or `rel (choiceAll (fun j : {j // j ≠ i} => f j)) s s'`.
+It is what makes an `n`-ary choice usable by the **binary** rely/guarantee rules
+(`relyGuarantee_until`, `preserves_of_guarantees`, `Compatible`), and
+`action_simp` consumes its `∃`/`∨` shape through `exists_or`.
+
 ---
 
 ## 5. Modularity
@@ -296,8 +303,8 @@ the specification".
 The `interleave` of §5.2 composes only **product states**, because there "the two
 components do not interfere" is *hard-wired into the type*: the state is `σ × τ`,
 and one component's action cannot touch the other's. A shared record has no such
-convenience — process 1 writes `pc1`, process 2 writes `pc2`, and both may write
-`turn`.
+convenience — in the mutex, node `i` writes its own `pc i`, and every node may
+write the shared token `turn`.
 
 To recover compositionality one has to state the **frame condition** as a provable
 fact:
@@ -369,9 +376,21 @@ The two stability obligations mention only the **interfaces** `R₁`/`R₂`, nev
 other component's code — that is the payoff (modularity: the other component can be
 re-implemented as long as it still satisfies the interface, and this component's
 proof does not change). For **state invariants** what it buys is modularity rather
-than shorter proofs (see the infeasibility argument in §11.9); what genuinely
-changes the shape of a proof is a **prefix property** ("a region holds until the
-goal is reached"):
+than shorter proofs (see the infeasibility argument in §11.9) — in fact the rely is
+then *determined* (`derivedRely I := fun s s' => I s → I s'`), so it need not appear
+at the call site at all:
+
+```lean
+theorem compatible_of_guarantees (g₁ : ∀ s s', I s → rel A₁ s s' → I s')
+    (g₂ : …) : Compatible I A₁ A₂ (derivedRely I) (derivedRely I)
+
+theorem preserves_of_guarantees (g₁ : …) (g₂ : …) : Preserves (A₁ <|> A₂) I
+  -- = Preserves.orElse composed with the packaging above
+```
+
+What genuinely changes the shape of a proof is a **prefix property** ("a region
+holds until the goal is reached"), where the environment obligation is about a
+region rather than an invariant:
 
 ```lean
 theorem relyGuarantee_until (hbeh : ∀ n, rel (A₁ <|> A₂) (b n) (b (n+1)))
@@ -382,8 +401,11 @@ theorem relyGuarantee_until (hbeh : ∀ n, rel (A₁ <|> A₂) (b n) (b (n+1)))
 
 `Examples/MutexLiveness.region_until_goal` is now an instance of this theorem: the
 old "six-way `action_simp; grind` plus a hand-written prefix induction" is split
-into two interface lemmas (process 1's guarantee, process 2's rely), with the
-induction supplied by the library.
+into two interface lemmas (a node's own guarantee `region_steps_own`, the
+environment's rely `region_steps_others`), with the induction supplied by the
+library. The node split itself is `MutexLiveness.rel_next_iff`
+(`next = steps i <|> others i`), so binary `relyGuarantee_until` still covers the
+`Fin n` case.
 
 **Synchronous (lock-step) composition**: `ViewModule.sync` makes both components
 step together; `Disjoint.set_set` guarantees that the order of the two updates does
@@ -392,8 +414,13 @@ and that each projection advances **exactly** (unlike interleaving, which may
 stutter). Note that lock-step composition requires both components to be able to
 move.
 
-**Automation**: `disjoint_auto` closes `Disjoint` goals for structure-field views in
-one tactic (pointwise unfolding + `cases` + `rfl`).
+**Automation**: `disjoint_auto` closes `Disjoint` goals for structure-field views
+in one tactic, through two channels: a **certificate** emitted by the deriver
+(`T.disjoint_f_g`, registered via the naming convention or the `@[field_disjoint]`
+attribute) and a **semantic fallback** (`cases; rfl`, without casing the values).
+Disjointness also *composes* (`Disjoint.comp_of_disjoint` / `comp_left` /
+`comp_right`), which is how nested footprints are proved from a base case, and the
+array-like (`upd`) case is handled conditionally by `DisjointUnder`.
 
 ## 6. The proof layer: a single induction engine
 
@@ -448,19 +475,19 @@ been unfolded", or "`grind` cannot derive this arithmetic fact").
 
 | Macro | Purpose |
 | --- | --- |
-| `action_simp` | `simp (config := {failIfUnchanged := false}) only [rel_*, ActionM.*_apply, Prod.mk.injEq, ...] at *`; unfold action semantics to first order |
-| `step` | `action_simp; try grind`: one step obligation |
-| `inv_induct` | `unfold Preserves; intro s hs s' hstep; step`: the canonical `Preserves` skeleton |
+| `action_simp` | `simp (config := {failIfUnchanged := false}) only [rel_*, ActionM.*_apply, Prod.mk.injEq, exists_and_left, exists_eq_left, exists_eq, exists_or, and_assoc, upd_fun, ...] at *`; unfold the action semantics to first order **and normalize** the result (collapse the `∃ t, (P s ∧ t = s) ∧ Q t` shape, push the `choiceAll`/`<|>` witness disjunction out, unfold `upd` at the function level) |
+| `action_step` | `action_simp; try grind`: one step obligation |
+| `inv_induct` | `unfold Preserves; intro s hs s' hstep; action_simp`: the canonical `Preserves` skeleton |
 | `safe_induct` | `apply Module.safe_of_preserves`, leaving the two goals `init ⊆ P` and `Preserves next P` |
 
 Two implementation details matter:
 
 * `failIfUnchanged := false`: `action_simp` must not error when there is no `rel` to
-  unfold, otherwise `try step` and subsequent manual unfolding fight each other;
+  unfold, otherwise `try action_step` and subsequent manual unfolding fight each other;
 * do **not** use `·` bullets inside a macro: an early version had `·` in a macro
   body, and the caller's `·` competed with the macro's goal focusing, producing the
   bizarre combination of "unsolved goals" and "No goals to be solved". Now the
-  pattern is `apply ... <;> try step`, leaving the goal structure to the caller.
+  pattern is `apply ... <;> try action_step`, leaving the goal structure to the caller.
 
 ### 7.3 A typical user proof
 
@@ -541,17 +568,42 @@ Implemented (`LeanAction/Liveness.lean`), in two layers:
   variants only require their hypotheses **inside an invariant region `I`**, and
   only while `μ > 0` — variants for shared-memory protocols are usually **not
   globally monotone** (leaving the critical section sends the variant back up), and
-  this relaxation is a prerequisite for such proofs.
+  this relaxation is a prerequisite for such proofs. This `Nat` family is the
+  same argument as `wf_progress_false` below at `r := (· < ·)`, with the two
+  hypotheses conditioned on `μ > 0` instead of assumed globally; it is stated at
+  the **sequence** level (a projection of a product behavior is not a behavior of
+  the component module), which is why it is kept as its own engine rather than
+  derived from the module-level one.
+* **leads-to algebra and WF1**: `LeadsTo.refl`/`mono`/`trans`/`or`/`cancel`, the
+time-shift lemmas (`isBehavior_add`/`weakFair_add`, `LeadsTo.of_shift`) that
+remove the "shift the behavior, transfer fairness" boilerplate from every
+packaging proof, and the WF1 rule: `leadsTo_of_wf1_seq` works for an **arbitrary
+step relation** (the module-level `leadsTo_of_wf1` is the `T = M.next` case), so
+WF1 applies to the *projection* of an interleaved behavior just as
+`eventually_zero_of_seq` does — the structural counterpart of the rank layer.
+`leadsTo_of_wf1(_seq)_nonStutter` is the TLA `⟨A⟩` (non-stuttering progress)
+version, with `nonStutter A` the `A`-steps that change the state. Finally
+`leadsTo_of_rank_region` **fuses** WF1's stepwise stability with the rank
+argument: it replaces the global invariant `hI : ∀ n, μ (b n) > 0 → I (b n)`
+(which fails after an enter/exit cycle) by WF1's `hstab`, discharging the
+`by_cases`/prefix induction **once** in the library — so the rank route and the
+WF1 route now have the same call-site shape. The rank is general (`μ : σ → W`
+for a transitive well-founded `r`, with `wf_progress_false` the sequence-level
+engine), not `Nat`-specific; the common `Nat` (or any `<`-order) case goes through
+`leadsTo_of_rank_wf`, which reads the order facts off a `WFTrans` instance
+(`wf` + `trans`) so the call site no longer passes the pair by hand. Registering
+another rank order (lexicographic products, subtypes) is an `LT` + `WFTrans`
+instance.
 * **termination of loops**: `loop_can_exit` turns a decreasing variant into the
   "there exists a terminating run" half of termination for `while`; combined with
   `Hoare.loop` (partial correctness) this gives **total correctness** of a loop (see
   `countTo3_total` in `Examples/Liveness.lean`).
 
 Liveness of a shared-memory protocol is instantiated in
-`Examples/MutexLiveness.lean`: "if process 1 is in the region (waiting and holding
-the turn) and `enter1` is weakly fair, it eventually enters the critical section",
+`Examples/MutexLiveness.lean`: "if node `i` is in the region (waiting and holding
+the token) and `enter i` is weakly fair, it eventually enters the critical section",
 and the complementary direction "inside the critical section, weak fairness for
-`exit1` eventually takes it out" (the latter **consumes** safety: the stability of
+`exit i` eventually takes it out" (the latter **consumes** safety: the stability of
 the region comes from `Mutex.inv_step`). The approach is to pair the variant with a
 hand-written region `Region`, rather than to hope for global monotonicity.
 
@@ -570,18 +622,38 @@ induction, because it is not globally preserved).
 
 ### 9.3 Other
 
-* **Lens derivation**: a `deriving` handler or a `lens!` macro (see §5.1).
+* **Lens/View derivation**: the `deriving ViewFields, LensFields` handlers and the
+  `view_defs`/`lens_defs` commands exist (§5.1), and now also emit one `Disjoint`
+  certificate per pair of sibling fields. Remaining: an ergonomic `lens!`-style
+  macro, and the deriving handler still declines *parameterized* structures (the
+  commands take the type as a term for those).
 * **Parallel semantics**: four layers exist — product state (`interleave`, §5.2),
   shared state with disjoint footprints (`ViewModule.parallel`),
   **rely/guarantee** (`Compatible` + `Preserves.orElse_of_compatible`, used when
   footprints overlap, as in `Examples/RelyGuarantee` and `Examples/MutexLiveness`),
   and **synchronous** (`ViewModule.sync`). Still missing: (a) **automatic discovery
-  of relies** (today they are written by hand, usually after some trial and error);
+  of relies** — the safety fragment no longer needs one: `derivedRely`/
+  `preserves_of_guarantees` compose the two guarantee lemmas directly ("rely as
+  output"), and explicit `Rel`s remain only for the residual tier (value-constraint
+  interfaces like `s'.v ≤ s.v`); the *liveness* RG rule is now
+  `leadsTo_of_rank_region` — with `T := A₁ <|> A₂` its `hstab`/`hdec` split by
+  component and the environment half is exactly "under the rely, the variant does
+  not increase". The **frame half of rely discovery is now done**: `PreservesView`
+  + `@[rely_cert]` + `rely_auto` is the rely-side twin of
+  `Disjoint`/`field_disjoint`/`disjoint_auto`, and `rely_defs` generates the
+  certificates from the action footprints (§11.9). What remains on this front is
+  the *constraint* rely (`s'.v ≤ s.v`), which is user knowledge by construction,
   (b) **systematic support for non-state relies** (every rely here is a
   `σ → σ → Prop`; how to generate and validate a suitable rely from code has no
-  methodology yet); (c) **liveness for synchronous composition** (only safety so
-  far); (d) footprint inference only reaches the pointwise `cases`+`rfl` case
-  (`disjoint_auto`); complex views still need hand-written proofs.
+  methodology yet); (c) **liveness for synchronous composition** no longer needs a
+  new rule — the joint step is the step relation `T`, so `leadsTo_of_rank_region`
+  applies directly (`Examples/Frame.two_sync_live`; the projection/stutter
+  machinery is only needed for the *interleaving*); (d) footprint inference is
+  complete for **flat** structures
+  (deriver certificates + `disjoint_auto`) and now composes (`Disjoint.comp_of_disjoint`
+  / `comp_left` / `comp_right`) and handles the array-like case conditionally
+  (`upd`/`upd_noteq`/`upd_comm`, `DisjointUnder`); arbitrary hand-written
+  non-pointwise views still need hand-written proofs.
 * **Invariant synthesis**: `inv` must be supplied by hand today; the shape of
   `Module.safe_of_invariant` is already suitable for hooking up IC3/Houdini-style
   invariant guessing.
@@ -601,17 +673,17 @@ Examples that compile, and what they cover:
 
 | Example | Coverage |
 | --- | --- |
-| `Examples/Basic` | `do` DSL, `<|>`, the invariant `n = log.length`, `safe_induct`, `while` + `rel_loop`, nested-field focus via `View.comp` |
+| `Examples/Basic` | `do` DSL, `<|>`, the invariant `n = log.length`, `safe_induct`, `while` + `rel_loop`, nested-field focus via `View.comp`, and the deriver's pairwise `Disjoint` certificates discharged by `disjoint_auto` |
 | `Examples/Parallel` | `Module.interleave`, a sum invariant, `Refines` with stuttering |
-| `Examples/Mutex` | shared-variable protocol (turn-based mutual exclusion): `guard` + six process steps, an invariant mixing both processes, `safe_induct`/`safe_of_invariant`, constructive reachability, `not_rel_guard_seq` to prove "blocked" |
+| `Examples/Mutex` | N-node shared-variable protocol (token-based mutual exclusion): nodes indexed by `Fin n`, an inductive per-node `pc` (`out`/`wait`/`cs`), `guard` + `choiceAll` over the node steps, the invariant "in the critical section ⇒ holds the token", `safe_induct`/`safe_of_invariant`, constructive reachability, `not_rel_guard_seq` to prove "blocked" |
 | `Examples/Hoare` | partial correctness: `Hoare.iterate` (arithmetic post-condition), `Hoare.loop` (`while` + exit condition), `Hoare.nondet`, `Hoare.focusView` (focused triples) |
 | `Examples/DataRefinement` | non-identity abstraction map, safety transfer along refinement, an implementation-only invariant (`count = log.length`), `Refines.reach` lifting concrete runs |
 | `Examples/Machine` | stack machine with the program in the state: `choiceAll` dispatch, safety for **every** program (the code never grows), the concrete run `[push 2, push 3, add] → [5]` |
 | `Examples/Liveness` | inevitability under fairness (a counter must reach 3), an explicit theorem that **liveness fails without fairness** (a stuttering behavior), the safety→`Always` bridge (including `Always`-form mutual exclusion), `while` termination and loop total correctness |
-| `Examples/MutexLiveness` | liveness of the shared-memory protocol: a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant) |
+| `Examples/MutexLiveness` | liveness of the N-node protocol: the step split `next = steps i <|> others i` (`rel_next_iff`), a region-restricted (non-globally-monotone) variant, both "enter" and "leave" directions; the latter gets region stability from safety (the mutex invariant); the enter direction is also proved with the rank-free WF1 rule (`leadsTo_of_wf1`) |
 | `Examples/ParallelLiveness` | liveness composition for interleaving: component liveness (projection + fairness transfer + sequence-level rank argument) into product liveness, with a counterexample showing the fairness hypothesis for the right component cannot be dropped |
-| `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous composition (`sync`), and `¬ Disjoint` explaining why mutex is outside this layer |
-| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), `¬ Disjoint` showing why the frame layer cannot do it |
+| `Examples/Frame` | disjoint footprints on a shared record: the frame condition as a proof obligation, the frame theorem (each half proved on its own state type), composed liveness, synchronous safety and liveness (`sync`, `two_sync_live`), nested footprints (`Disjoint.comp_of_disjoint`), indexed/array footprints (`upd`, conditional on `i ≠ j`), conditional disjointness (`DisjointUnder`, aliasing freedom), and `¬ Disjoint` explaining why mutex is outside this layer |
+| `Examples/RelyGuarantee` | composing **overlapping** footprints by interfaces: `Compatible` + `Preserves.orElse_of_compatible` (each component answers only to its own interface), the rely-as-output shortcut (`derivedRely`/`preserves_of_guarantees`) needing no explicit `Rel`, the liveness counterpart (`leadsTo_of_rank_region` with an **opaque** environment known only by its rely `s'.v ≤ s.v`), and `¬ Disjoint` showing why the frame layer cannot do it |
 
 ---
 
@@ -637,14 +709,14 @@ descends through the two projections" (`reach_interleave_fst/snd`).
 
 ### 11.2 What felt natural
 
-* **Protocol size is not a problem**: the mutex protocol's six-way nondeterministic
-  step (including two `exit`s that rewrite the shared `turn`) goes through in one
-  shot with `inv_induct; simp only [...]; action_simp; grind`, no manual `rcases`.
+* **Protocol size is not a problem**: the mutex protocol's `choiceAll` over the
+  nodes (including `exit`s that rewrite the shared `turn`) goes through with
+  `action_simp` + `simp_all`, no manual `rcases`.
 * **The three-stage invariant** (`init ⊆ I` → `Preserves next I` → `I ⊆ P`) matches
   real proof habits and `Module.safe_of_invariant` provides exactly that shape.
 * **Constructive reachability**: a chain of `Reach.single`/`Reach.step` with one
-  `action_simp` lemma per step proves both what *can* happen (`p1_can_enter`) and
-  what *cannot* (`p2_blocked_…`).
+  `action_simp` lemma per step proves both what *can* happen (`can_enter`) and
+  what *cannot* (`blocked_by_token`).
 * **Refinement and implementation details coexist**: the abstract layer uses
   `Refines.safe` for interface properties while the implementation proves
   log-length invariants invisible to the abstraction, with no interference.
@@ -692,6 +764,29 @@ descends through the two projections" (`reach_interleave_fst/snd`).
    of **independent components**; shared memory needs a frame/separation layer.
 8. **Loop termination was still absent**: `Preserves.loop`/`Hoare.loop` only give
    partial correctness; liveness (fairness, `Eventually`) was out of scope (§9.2).
+9. **Parameterizing the node count turns the state into an array.** Generalizing the
+   mutex to `n` nodes (`pc : Fin n → Pc`, `turn : Fin n`) made the program-counter
+   update *indexed*, i.e. `upd s.pc i v`. `simp only [upd]` does **not** unfold it:
+   `upd.eq_def` is stated on the fully applied form (`upd f i v j`), so it misses the
+   function-valued occurrence inside `s' = { s with pc := upd … }`. The first cut
+   needed a manual recipe at every obligation (`unfold setPc release upd at *` +
+   `simp_all [upd.eq_1]`), which is user knowledge in this document rather than in
+   the tactic — exactly the wrong place for it. Both halves are now *in* the tactic:
+   `upd_fun` (a function-level equation for `upd`, in `LeanAction/Lens.lean`) is part
+   of `action_simp`'s simp set, and `action_simp` also collapses the
+   `∃ t, (P s ∧ t = s) ∧ …` shape and pushes the `choiceAll` witness disjunction
+   out, so `inv_step` is back to `action_simp; grind` (see §7.2). The remaining
+   boundary is the users' *named* update helpers (`setPc s i v := { s with pc := upd … }`):
+   `action_simp` does not unfold user `def`s, so either list them in the preceding
+   `simp only` or write the update inline. Making them ambient would want a persisted
+   registry (`@[actionUnfold]`) consulted by the tactic — the same mechanism as
+   `@[field_disjoint]`/`disjoint_auto`; this package is Std-only and has no custom
+   `simp`-set registry to hang it on. Bonus: making `pc` an **inductive** type
+   (`out`/`wait`/`cs`) deletes the `pc_bounds` invariant entirely — "the pc is in
+   range" is now `cases` — and it also removes the *environment's* bound obligation:
+   the old region bounded the partner with `pc2 ≤ 1` (a `Nat` fact needing the
+   protocol argument), while `∀ j ≠ i, pc j ≠ cs` is closed by the constructor
+   disjointness alone.
 
 ### 11.4 Extra lessons from the liveness layer
 
@@ -721,13 +816,69 @@ descends through the two projections" (`reach_interleave_fst/snd`).
   `rel A (b n) (b (n+1))` (the step satisfies `A`'s relation), so for a module
   `A <|> B`, "`A` is always enabled but the environment always takes `B`" is exactly
   a violation of weak fairness — which is why `stuck` can be refuted.
+* **WF1: the TLA deviation, and the module/sequence split.** Two design points
+  surfaced with the WF1 rule. (1) TLA's WF1 is about `⟨A⟩_v = A ∧ v' ≠ v`; the first
+  version here required *every* `A`-step (stuttering included) to reach the goal,
+  which is unprovable for a progress action like `guard P <|> skip`. The fix is
+  `nonStutter A` (the `A`-steps that change the state), with fairness taken for it:
+  `leadsTo_of_wf1_nonStutter` (see `Tests/WF1.count_wf1`). (2) The rule first lived
+  only at the module level (`IsBehavior M b` + `rel M.next`), so it could not be
+  used on a *projection* of an interleaved behavior, where the other component's
+  steps appear as stuttering. Lifting it to an arbitrary step relation `T`
+  (`leadsTo_of_wf1_seq`, with `leadsTo_of_wf1 := … (T := M.next)`) is exactly the move
+  `eventually_zero_of_seq` already made for the rank layer. The lesson is that
+  **the rule and the engine should be at the same layer**.
+* **`LeadsTo` needs its algebra**: `LeadsTo.cancel` (`P ⇝ Q ∨ R` together with
+  `R ⇝ Q` gives `P ⇝ Q`), the shift lemmas `isBehavior_add`/`weakFair_add`, and the
+  introduction principle `LeadsTo.of_shift` are each tiny, but without them every
+  packaging proof (e.g. `Examples/MutexLiveness.leadsTo_enter`) re-implements the
+  `∀ n, ∃ m ≥ n` bookkeeping and the behavior-shift by hand.
+* **Fusing the two liveness engines closes the "global invariant" gap.** The rank
+  theorems assume `hI : ∀ n, μ (b n) > 0 → I (b n)` — a *time-indexed universal*.
+  For the mutex that is false (after an enter/exit cycle the state is outside
+  `Region` again while `μ > 0`), so the proof carried a
+  `by_cases (∃ N, Q (b N))` and only ran the rank argument on the never-reached
+  prefix. The fused rule `leadsTo_of_rank_region` replaces `hI` by WF1's *stepwise*
+  `hstab` and performs that prefix induction once; `eventually_enter` then
+  collapses to a single `apply` that shares `wf1_env` with the WF1 route. The
+  general lesson: **a "global" hypothesis that a rule only uses on a prefix should
+  be restated as that prefix property** — and WF1's `henv` shape *is* the prefix
+  property, which is why the two rules fuse cleanly. Generalizing the rank to
+  `μ : σ → W` then only touches this one rule (the engine `wf_progress_false` uses
+  `WellFounded.induction` directly); two order facts are needed — well-foundedness
+  and transitivity — and `hdec` is stated as "equal or strictly below" so the
+  hypothesis composes along the prefix without the order being total.
+* **The rank `Nat`-boilerplate is now a type class, not a macro.** The call sites
+  used to pass `(r := (· < ·)) Nat.lt_wfRel.wf (fun _ _ _ => Nat.lt_trans)` by
+  hand. Since all four sites rank by `Nat`, this is exactly the two order facts
+  of the rule, so they are bundled in `WFTrans` (`wf` + `trans` for a `LT` order)
+  and `leadsTo_of_rank_wf` reads them off the instance; the general
+  `leadsTo_of_rank_region` keeps its explicit `r` for unregistered orders. Two
+  failed alternatives are worth recording: stating the obligations via a
+  `WFTrans.rel` **projection** hides `<` from `omega` (even with
+  `@[instance_reducible]`), and `[WFTrans W r]` with `r` an implicit metavariable
+  leaves type-class resolution **stuck** ("the second type argument is a
+  metavariable") — the class must be parameterized by the type carrying the
+  `LT`/order instance, not by the relation term.
+* **A "shape only" tactic macro for the five rank obligations does not work.**
+  The obligations are already uniform after the class change (`hstab hreg hdec
+  hprog henab`, fixed binders), so a macro introducing them looks attractive —
+  but Lean tactic macros are **hygienic**: names a macro body introduces
+  (`intro s s' hq h`) are renamed (`s✝`, `hq✝`) and are invisible to the tactics
+  the caller writes next, which is precisely the tail one wanted to keep. Making
+  the names visible requires an `elab` rule with `Lean.mkIdentFrom` to create
+  **deliberately unhygienic** identifiers (verified to work), i.e. ~20 lines of
+  metaprogramming that injects `s`/`hs`/`hq`/`h` into the user's context, with
+  the shadowing hazards that implies — for about a dozen `intro` lines across the
+  whole repo. The hygienic alternatives automate the tail instead (`action_simp`,
+  `action_step` = `action_simp; try grind`), and that is what the library keeps.
 
 ### 11.5 Lessons from liveness of a shared-memory protocol
 
 Pushing liveness to a shared-variable protocol like `Mutex` exposed three things:
 
 1. **The variant is not globally monotone.**
-   `rank s = if s.pc1 = 2 then 0 else 1` goes back from `0` to `1` on the
+   `rank i s = if s.pc i = cs then 0 else 1` goes back from `0` to `1` on the
    "leave the critical section" step. The original rank argument demanded a global
    `μ s' ≤ μ s`, so it had to be relaxed to "only inside the invariant region `I`,
    only while `μ > 0`, and only then monotone/enabled"
@@ -735,28 +886,37 @@ Pushing liveness to a shared-variable protocol like `Mutex` exposed three things
    needed while `μ > 0`, which corresponds exactly to "once the goal is reached it
    does not matter what happens next".
 2. **The region is not globally preserved**, so `Preserves`/`always_of_preserves` do
-   not apply: `Region ∨ pc1 = 2` is broken by `exit1` (`pc1` becomes `0`). What does
-   hold is the **prefix form**: "as long as the critical section has not been
-   entered, the state stays in the region", proved by induction over the behavior
-   prefix (`region_until_goal`), where the "next step is not `pc1 = 2`" hypothesis
-   rules out the `enter1` branch. This is also why `eventually_enter1` has to start
-   with `by_cases (∃ N, pc1 = 2)`: if the goal is already reached, one is done;
-   otherwise "`μ > 0` throughout" holds and hence the region does.
+   not apply: `Region i ∨ pc i = cs` is broken by `exit i` (`pc i` becomes `out`).
+   What does hold is the **prefix form**: "as long as the critical section has not
+   been entered, the state stays in the region", proved by induction over the
+   behavior prefix (`region_until_goal`), where the "next step is not `pc i = cs`"
+   hypothesis rules out the `enter i` branch. This is also why `leadsTo_enter` goes
+   through the fused `leadsTo_of_rank_region`, which performs that `by_cases`
+   internally: if the goal is already reached, one is done; otherwise "`μ > 0`
+   throughout" holds and hence the region does.
 3. **Safety and liveness have different demands on the model.** The original `Mutex`
-   example wrote `req1` (request the lock) as the unguarded
-   `update (pc1 := 1)`: safety was unaffected (it does not touch `turn`), but a
-   process inside the critical section could "re-request" and drop back to waiting,
+   example wrote `req i` (request the lock) as the unguarded
+   `update (pc i := wait)`: safety was unaffected (it does not touch `turn`), but a
+   node inside the critical section could "re-request" and drop back to waiting,
    which destroys the stability of the region, so liveness could not be proved.
-   Adding `guard (pc1 = 0)` made everything go through. **Conclusion: a model that is
-   permissive enough for safety will betray you at liveness.**
+   Adding `guard (pc i = out)` made everything go through. **Conclusion: a model that
+   is permissive enough for safety will betray you at liveness.**
 
-The complementary direction `leadsTo_exit1` (leaving the critical section) is an
+The complementary direction `leadsTo_exit` (leaving the critical section) is an
 example of liveness **consuming** safety: the fact "in the critical section implies
-holding the turn" comes from `Mutex.inv_step` + `always_of_preserves`, and without
-it the other process's steps cannot be ruled out and the variant's monotonicity
+holding the token" comes from `Mutex.inv_step` + `always_of_preserves`, and without
+it the other nodes' steps cannot be ruled out and the variant's monotonicity
 cannot be established.
 
 ### 11.6 Generators: why a term macro fails and a command succeeds
+
+* **Tactic macro names must be chosen against the stdlib, not only the repo.**
+  The one-step macro was originally `step`; that is a plausible core/Std tactic
+  name and it also reads like the user models' own `def step` (`Examples/Frame`,
+  `Examples/Machine`), so it is now **`action_step`** and there is no `step`
+  alias — keeping one would keep the clash, and a silently shadowed stdlib
+  `step` is exactly the kind of failure that is hard to trace. (The alias lived
+  for one round; nothing in the repo had ever called it as a tactic.)
 
 Automatic generation of `Lens`/`View` took two detours before a command solved it:
 
@@ -866,9 +1026,15 @@ difference:
 * **R/G only really pays off on prefix properties.** The original
   `region_until_goal` in `Examples/MutexLiveness` was "six-way `action_simp; grind`
   plus a hand-written prefix induction"; with R/G it becomes two one-sided interface
-  lemmas (`region_steps1` is the component's own guarantee, `region_steps2` is the
-  environment's rely, the latter never mentioning `steps1`) plus the library's
-  `relyGuarantee_until` doing the induction. By contrast the mutex's **safety**
+  lemmas (`region_steps_own i` is node `i`'s own guarantee, `region_steps_others i`
+  is the environment's rely, the latter never mentioning `steps i`) plus the
+  library's `relyGuarantee_until` doing the induction. The node case split itself is
+  `rel_choiceAll_split` (§4.4), which is also what keeps the *binary* rules
+  applicable to the `Fin n` system. A related win of the inductive `pc`: the old
+  region bounded the partner with `pc2 ≤ 1` (a `Nat` fact whose proof needed the
+  protocol argument, `region_steps2`), whereas `∀ j ≠ i, pc j ≠ cs` is closed by
+  constructor disjointness — so the *environment's* bound obligation disappeared
+  together with `pc_bounds`. By contrast the mutex's **safety**
   (`inv_step`) is not shorter with R/G — see the next point.
 * **For state invariants, R/G buys modularity, not brevity.** I tried to redo a
   "shared cell × two components" safety example and the conclusion was clear: if some
@@ -878,6 +1044,65 @@ difference:
   the value of the safety example is that *obligations mention only interfaces*
   (in `Examples/RelyGuarantee` each direction looks only at the other component),
   not the proof length.
+* **Resolution: "rely as output".** The refactor turns the previous point into a
+  theorem: for the safety fragment the rely is *determined* — `derivedRely I` is
+  the only candidate that can work — so it should not be a parameter at all.
+  `compatible_of_guarantees` makes `Compatible` against it definitional, and
+  `preserves_of_guarantees` composes the two guarantee lemmas directly (it is
+  `Preserves.orElse` plus that packaging). The earlier infeasibility argument, in
+  other words, is not a reason to avoid R/G; it is the *explanation of why
+  `derivedRely I` is the complete default*, and the explicit `Rel` layer is left for
+  the residual tier (`s'.v ≤ s.v`-style value constraints) where no single
+  predicate `I` suffices.
+* **Certificate lookup: naming convention vs. attribute.** `disjoint_auto` finds the
+  deriver's certificates by the `T.disjoint_f_g` naming convention. That is
+  self-consistent (a rename regenerates both), but for *hand-written* certificates
+  the convention is a silent-coupling hazard: a miss quietly falls through to the
+  semantic channel, which succeeds on the easy goals and fails — with an unrelated
+  message — on the `Nat`-valued ones. The fix is the `@[field_disjoint]` attribute
+  (a persisted registry the tactic also consults) plus a
+  `trace[LeanAction.disjoint_auto]` line on fallback: the failure mode is turned
+  from silent into observable.
+* **The rely side reuses that whole channel.** `PreservesView A v` ("every
+  `A`-step leaves `v` unchanged") is the frame-rely obligation as a proposition;
+  `@[rely_cert]` fills the same kind of persisted registry, keyed by the
+  `(action, view)` **head pair** rather than by name, and `rely_auto` applies a
+  certificate to either `PreservesView A v` or the body `v.get s' = v.get s` (with
+  `rel A s s'` in context), leaving the certificate's per-index side conditions
+  (`i ≠ j`) to `assumption`/`grind`. Two design points: (1) there is deliberately
+  **no semantic fallback** (contrast `disjoint_auto`'s `cases; rfl`) — the action
+  has to be unfolded, which only the caller knows how to do, so a miss is a loud
+  "no `@[rely_cert]` for (A, v)"; (2) `rely_defs T [a₁, …] writes [[f₁, g₁], …]`
+  emits the certificates for the *other* fields from the action footprints — one
+  **write-set per action**, so a multi-field writer (the mutex `exit`: `pc` and
+  `turn`) can be stated without the deriver emitting a false certificate for its
+  second field — and the generated shape is exactly
+  `Tests/Relies.steps_preserves_pcView`, the *use* site one `rely_auto`
+  (`Tests/Relies.steps_respects_frame_rely`); (3) on the read side `rely_auto`
+  collects the head of **every** `rel Aᵢ s s'` hypothesis, not just the first, so a
+  WF1/`hstab` goal that carries both the component's own relation and the
+  environment's tries both `(Aᵢ, v)` pairs (the failure mode stays loud: the error
+  lists the candidate pairs and the certificates it tried). "Automatic discovery"
+  therefore means: generate + look up the **frame** half, and leave the
+  **constraint** half (`s'.v ≤ s.v`) to the user, which is precisely the boundary
+  `Tests/Relies` documents. A deriver that also *infers* the footprint instead of
+  taking it as metadata is still open — the first attempt (try every (action,
+  view) pair, skip the failures) does not work, because a failed `elabCommand`
+  *logs* its error and returns without throwing, so the deriver cannot suppress
+  the failed pair's message and the whole command errors.
+* **A fallback hides an untested channel.** Three separate certificate bugs —
+  the `Disjoint.symm` application was structurally malformed (`mkApp` put the
+  certificate into `symm`'s implicit `σ` slot), a certificate with a side
+  condition left the main goal assigned instead of committing or rolling back,
+  and the "no certificate, using the semantic channel" trace was suppressed by
+  a syntactically-plausible-but-absent name — all survived because *no test had
+  a goal the semantic fallback could not close*. `Tests/Certificates` now has
+  "opaque view" cases (an `upd`-indexed view needs `upd_comm`, so `cases; rfl`
+  fails) for the reverse/`symm`, side-condition and trace paths, and the
+  `LensFields` naming-convention test asserts on the trace because there the
+  fallback genuinely *can* close the goal. **Conclusion: for every channel with
+  a fallback, at least one test goal must be unreachable by the fallback** —
+  otherwise `green` only means the fallback is still working.
 * **`sync` hit the same defeq trap again**: `rel`'s equality is `z = (Done.mk, x)`
   while one wants to say `s' = x`, and the two need `Prod.mk.injEq`, not defeq. That
   is the third time (`rel_focusView`, `rel_lift`, now `rel_sync`), and the fix is the
@@ -896,6 +1121,12 @@ difference:
   `rel_sync` *can* be written with `Iff.rfl` … in practice even with `abbrev` one
   still needs the manual `Prod.snd` (previous point), but `abbrev` saves `unfold`
   elsewhere.
+* **`sync` liveness is an instance, not a rule.** Unlike the interleaving — whose
+  projection stutters and therefore needs `eventually_zero_of_seq` /
+  `leadsTo_of_wf1_seq` — the lock-step joint step *is* the step relation, so
+  `leadsTo_of_rank_region` applies with `T := M₁.sync M₂` directly
+  (`Examples/Frame.two_sync_live`). The roadmap item "liveness for synchronous
+  composition" turned out to be a missing *example*, not a missing theorem.
 
 ### 11.10 Conclusions
 
