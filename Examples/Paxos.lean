@@ -154,6 +154,10 @@ def VotedFor (s : St A) (a : A) (b : Ballot) (v : Nat) : Prop := s.votes a b v
 /-- `a` has cast no vote in ballot `b`. -/
 def DidNotVoteAt (s : St A) (a : A) (b : Ballot) : Prop := ∀ v, ¬ s.votes a b v
 
+/-- `a` has promised ballot `b` (or a higher one), so it will never vote below
+`b` (TLA+'s `maxBal[a] ≥ b`). -/
+def Promised (s : St A) (a : A) (b : Ballot) : Prop := (b : Nat) ≤ s.maxBal a
+
 /-- `a` can no longer vote in ballot `b`: it promised a strictly higher ballot
 and never voted in `b`. -/
 def CannotVoteAt (s : St A) (a : A) (b : Ballot) : Prop :=
@@ -164,9 +168,21 @@ either fully committed to `v` at `b`, or is unable to vote in `b` at all. -/
 def NoneOtherChoosableAt (s : St A) (b : Ballot) (v : Nat) : Prop :=
   ∃ Q, Quorum Q ∧ ∀ a, Q a → s.VotedFor a b v ∨ s.CannotVoteAt a b
 
+/-- Nobody in `Q` cast a vote in any ballot below `b`. -/
+def NoVotesBelow (s : St A) (Q : A → Prop) (b : Ballot) : Prop :=
+  ∀ d : Ballot, d < b → ∀ a, Q a → s.DidNotVoteAt a d
+
+/-- Nobody in `Q` cast a vote in any ballot strictly between `lo` and `hi`. -/
+def NoVotesBetween (s : St A) (Q : A → Prop) (lo hi : Ballot) : Prop :=
+  ∀ d : Ballot, lo < d → d < hi → ∀ a, Q a → s.DidNotVoteAt a d
+
+/-- Some member of `Q` voted for `v` in ballot `c`. -/
+def VotedInQuorum (s : St A) (Q : A → Prop) (c : Ballot) (v : Nat) : Prop :=
+  ∃ a, Q a ∧ s.VotedFor a c v
+
 /-- **Safety of a value at a ballot**: every lower ballot can only produce `v`. -/
 def SafeAt (s : St A) (b : Ballot) (v : Nat) : Prop :=
-  ∀ c : Ballot, (c : Nat) < (b : Nat) → s.NoneOtherChoosableAt c v
+  ∀ c : Ballot, c < b → s.NoneOtherChoosableAt c v
 
 /-- Every vote an acceptor has cast is safe at the ballot it was cast in. -/
 def VotesSafe (s : St A) : Prop := ∀ a b v, s.VotedFor a b v → s.SafeAt b v
@@ -179,21 +195,25 @@ def OneValuePerBallot (s : St A) : Prop :=
 def ChosenAt (s : St A) (b : Ballot) (v : Nat) : Prop :=
   ∃ Q, Quorum Q ∧ ∀ a, Q a → s.VotedFor a b v
 
-/-- **The phase-2a certificate** (`ShowsSafeAt` in `Voting.tla`): the
-proposer's evidence, obtained from a quorum `Q` of phase-1b responses, that `v`
-may safely be voted in ballot `b`.
+/-- **The phase-2a certificate** (Lamport's `ShowsSafeAt`): the evidence, from
+the phase-1b responses of a quorum `Q`, that a proposer may safely put `v` into
+ballot `b`.
 
-`Q` has all promised at least `b`, and either nobody in `Q` voted below `b`, or
-some ballot `c < b` is the highest ballot below `b` in which a member of `Q`
-voted, for `v`.  (TLA+ writes the second case with `c = -1` as a sentinel; here
-the two cases are just two disjuncts.) -/
+Read it as: *the highest vote `Q` cast below `b` is for `v`* — or `Q` cast no
+vote below `b` at all.  Concretely it says:
+
+* every member of `Q` has already promised at least `b`
+  (`b ≤ s.maxBal a`, so it will not vote below `b` again); and
+* either `Q` cast no vote below `b` (`s.NoVotesBelow Q b`), or there is a
+  highest such ballot `c < b`, carrying a `Q`-vote for `v`
+  (`s.VotedInQuorum Q c v`) and with no `Q`-vote in the gap above it
+  (`s.NoVotesBetween Q c b`).
+
+(This is TLA+'s definition with the `c = -1` sentinel replaced by an explicit
+disjunct.) -/
 def ShowsSafeAt (s : St A) (Q : A → Prop) (b : Ballot) (v : Nat) : Prop :=
-  (∀ a, Q a → (b : Nat) ≤ s.maxBal a) ∧
-  ((∀ d : Ballot, (d : Nat) < (b : Nat) → ∀ a, Q a → s.DidNotVoteAt a d) ∨
-   ∃ c : Ballot, (c : Nat) < (b : Nat) ∧
-      (∃ a, Q a ∧ s.VotedFor a c v) ∧
-      (∀ d : Ballot, (c : Nat) < (d : Nat) → (d : Nat) < (b : Nat) →
-        ∀ a, Q a → s.DidNotVoteAt a d))
+  (∀ a, Q a → s.Promised a b) ∧
+  (s.NoVotesBelow Q b ∨ ∃ c, c < b ∧ s.VotedInQuorum Q c v ∧ s.NoVotesBetween Q c b)
 
 end St
 
@@ -216,7 +236,8 @@ theorem showsSafeAt_safe {s : St A} (hVS : s.VotesSafe) (hOV : s.OneValuePerBall
   rcases hcert with hnone | ⟨c, hcb, hcv, hno⟩
   · -- nobody in `Q` voted below `b`: `Q` witnesses every lower ballot
     refine ⟨Q, hQ, fun a ha => Or.inr ⟨?_, ?_⟩⟩
-    · have := hbal a ha; omega
+    · have hb : (b : Nat) ≤ s.maxBal a := hbal a ha
+      have hc'n : (c' : Nat) < (b : Nat) := hc'; omega
     · exact hnone c' hc' a ha
   · -- somebody voted `v` at `c`; ballots below `c` come from `VotesSafe`
     obtain ⟨a₀, ha₀Q, ha₀v⟩ := hcv
@@ -235,7 +256,9 @@ theorem showsSafeAt_safe {s : St A} (hVS : s.VotesSafe) (hOV : s.OneValuePerBall
         exact Or.inl (hOV a a₀ c' w v hw ha₀v ▸ hw)
       · -- `a` cast no vote in `c'` and promised above it
         have hno' : ∀ w, ¬ s.votes a c' w := fun w hw => hvotes ⟨w, hw⟩
-        exact Or.inr ⟨by have := hbal a ha; omega, hno'⟩
+        exact Or.inr ⟨by
+          have hb : (b : Nat) ≤ s.maxBal a := hbal a ha
+          have hc'n : (c' : Nat) < (b : Nat) := hc'; omega, hno'⟩
 
 omit [DecidableEq A] in
 /-- **The proposer's phase-2a rule.**  If every member of the quorum `Q` has
@@ -243,11 +266,13 @@ promised `b`, all of `Q`'s votes lie at ballots `≤ c`, and some member voted
 `v` at `c < b`, then `v` is certified at `b`.  This is exactly the rule "pick
 the value of the highest-numbered reported vote". -/
 theorem showsSafeAt_of_maxVote {s : St A} {Q : A → Prop} (_hQ : Quorum Q)
-    {b c : Ballot} {v : Nat} (hbal : ∀ a, Q a → (b : Nat) ≤ s.maxBal a)
+    {b c : Ballot} {v : Nat} (hbal : ∀ a, Q a → s.Promised a b)
     (hmax : ∀ a d w, Q a → s.VotedFor a d w → (d : Nat) ≤ (c : Nat))
     (hcv : ∃ a, Q a ∧ s.VotedFor a c v) (hcb : (c : Nat) < (b : Nat)) :
     s.ShowsSafeAt Q b v :=
-  ⟨hbal, Or.inr ⟨c, hcb, hcv, fun d hcd _ a ha w hw => by have := hmax a d w ha hw; omega⟩⟩
+  ⟨hbal, Or.inr ⟨c, hcb, hcv, fun d hcd _ a ha w hw => by
+    have hcdn : (c : Nat) < (d : Nat) := hcd
+    have := hmax a d w ha hw; omega⟩⟩
 
 omit [DecidableEq A] in
 /-- **`VotesSafeImpliesConsistency`.**  Any two chosen ballots agree. -/
@@ -470,7 +495,7 @@ omit [DecidableEq A] [QuorumSystem A] in
 /-- The phase-2a certificate is trivial for a ballot in which nobody has voted
 yet, provided the quorum has promised at least that ballot. -/
 theorem certificate_no_votes {s : St A} {b : Ballot} {v : Nat} {Q : A → Prop}
-    (hnovote : ∀ a d w, ¬ s.votes a d w) (hbal : ∀ a, Q a → (b : Nat) ≤ s.maxBal a) :
+    (hnovote : ∀ a d w, ¬ s.votes a d w) (hbal : ∀ a, Q a → s.Promised a b) :
     s.ShowsSafeAt Q b v :=
   ⟨hbal, Or.inl (fun d _ a _ w hw => hnovote a d w hw)⟩
 
