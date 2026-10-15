@@ -60,6 +60,15 @@ argument and lives in `namespace St`, so it reads either `SafeAt s b v` or, in
 the "s-subject" style used throughout, `s.SafeAt b v`.  The state is kept
 explicit on purpose: Paxos proofs constantly relate two states (`s` and
 `s.castVote a b v`), and an implicit state would be uninferable there.
+
+**Automation.**  The action semantics is unfolded with the library's pipeline,
+`simp only [named action, inv] at *` followed by `action_simp`; `grind` then
+discharges the first-order obligations (`inv_init` and the `OneValuePerBallot`
+conjunct of each step).  The `VotesSafe` conjunct is deliberately *not* left to
+`grind`: it needs its quorum witness (`∃ Q, …`) re-established across the state
+update, and the phase-2a certificate needs a minimal-ballot case split.  Those
+steps are the explicit lemmas `safeAt_setMaxBal` / `safeAt_castVote` and
+`showsSafeAt_safe`, which `preserves_*` then applies.
 -/
 import LeanAction
 
@@ -269,14 +278,6 @@ termination_by b.1
 
 /-! ## The state machine -/
 
-/-- Unfolding `guard P ;; update f` without introducing the intermediate state. -/
-theorem rel_guard_seq_update {σ : Type u} {P : σ → Prop} {f : σ → σ} {s s' : σ} :
-    rel (guard P ;; update f) s s' ↔ P s ∧ s' = f s := by
-  simp only [rel_seq, rel_guard, rel_update]
-  constructor
-  · rintro ⟨t, ⟨hP, rfl⟩, hs⟩; exact ⟨hP, hs⟩
-  · rintro ⟨hP, rfl⟩; exact ⟨s, ⟨hP, rfl⟩, rfl⟩
-
 namespace St
 
 /-- Record that acceptor `a` promises ballot `b`. -/
@@ -360,9 +361,7 @@ theorem safeAt_setMaxBal {s : St A} {a : A} {b b' : Ballot} {v' : Nat}
   rcases hQv a'' ha'' with hv | ⟨hlt, hnv⟩
   · exact Or.inl (by simpa [VotedFor, setMaxBal] using hv)
   · refine Or.inr ⟨?_, ?_⟩
-    · by_cases ha : a'' = a
-      · subst ha; simp only [setMaxBal_maxBal_same]; omega
-      · rw [setMaxBal_maxBal_noteq b ha]; omega
+    · simp only [setMaxBal] at hlt ⊢; grind
     · simpa [DidNotVoteAt, setMaxBal] using hnv
 
 /-- Casting a vote preserves `SafeAt`, provided the new vote's ballot is at
@@ -376,9 +375,7 @@ theorem safeAt_castVote {s : St A} {a : A} {b b' : Ballot} {v v' : Nat}
   rcases hQv a'' ha'' with hv | ⟨hlt, hnv⟩
   · exact Or.inl (by simp only [VotedFor, castVote_votes]; exact Or.inl hv)
   · refine Or.inr ⟨?_, ?_⟩
-    · by_cases ha : a'' = a
-      · subst ha; simp only [castVote_maxBal_same]; omega
-      · rw [castVote_maxBal_noteq b v ha]; omega
+    · simp only [castVote] at hlt ⊢; grind
     · intro w hw
       simp only [castVote_votes] at hw
       rcases hw with hw | ⟨rfl, hcb, rfl⟩
@@ -386,45 +383,39 @@ theorem safeAt_castVote {s : St A} {a : A} {b b' : Ballot} {v v' : Nat}
       · subst hcb; omega
 
 theorem preserves_increaseMaxBal (a : A) (b : Ballot) :
-    Preserves (increaseMaxBal a b) Inv := by
+    Preserves (increaseMaxBal a b) St.Inv := by
+  unfold Preserves
   intro s hs s' hstep
-  simp only [increaseMaxBal, rel_guard_seq_update] at hstep
-  obtain ⟨hguard, rfl⟩ := hstep
-  refine ⟨?_, ?_⟩
-  · intro a' b' v' hv'
-    exact safeAt_setMaxBal (Nat.le_of_lt hguard)
-      (hs.1 a' b' v' (by simpa [VotedFor, setMaxBal] using hv'))
-  · intro a1 a2 b' v1 v2 h1 h2
-    exact hs.2 a1 a2 b' v1 v2
-      (by simpa [VotedFor, setMaxBal] using h1)
-      (by simpa [VotedFor, setMaxBal] using h2)
+  -- the library pipeline: expose the named action, then `action_simp` unfolds it
+  simp only [increaseMaxBal, St.Inv, VotesSafe, OneValuePerBallot, VotedFor] at *
+  action_simp
+  obtain ⟨hguard, hs'⟩ := hstep
+  subst hs'
+  constructor
+  · exact fun a' b' v' hv' => safeAt_setMaxBal (Nat.le_of_lt hguard) (hs.1 a' b' v' hv')
+  · simp only [setMaxBal] at *
+    grind
 
 theorem preserves_voteFor (a : A) (b : Ballot) (v : Nat) :
-    Preserves (voteFor a b v) Inv := by
+    Preserves (voteFor a b v) St.Inv := by
+  unfold Preserves
   intro s hs s' hstep
-  simp only [voteFor, rel_guard_seq_update] at hstep
-  obtain ⟨⟨hbal, hnew, hagree, hcert⟩, rfl⟩ := hstep
+  simp only [voteFor, St.Inv, VotesSafe, OneValuePerBallot, VotedFor] at *
+  action_simp
+  obtain ⟨hbal, hnew, hagree, hcert, hs'⟩ := hstep
+  subst hs'
   obtain ⟨Q, hQ, hcert'⟩ := hcert
   have hsafe : s.SafeAt b v := showsSafeAt_safe hs.1 hs.2 hQ hcert'
-  refine ⟨?_, ?_⟩
+  constructor
   · intro a' b' v' hv'
-    simp only [VotedFor, castVote_votes] at hv'
+    simp only [castVote_votes] at hv'
     rcases hv' with hold | ⟨rfl, rfl, rfl⟩
     · exact safeAt_castVote hbal (hs.1 a' b' v' hold)
     · exact safeAt_castVote hbal hsafe
-  · intro a1 a2 b' v1 v2 h1 h2
-    simp only [VotedFor, castVote_votes] at h1 h2
-    rcases h1 with h1 | ⟨ha1, hb1, hv1⟩
-    · rcases h2 with h2 | ⟨ha2, hb2, hv2⟩
-      · exact hs.2 a1 a2 b' v1 v2 h1 h2
-      · subst ha2; subst hb2; subst hv2
-        exact hagree a1 v1 (by rintro rfl; exact hnew v1 h1) h1
-    · subst ha1; subst hb1; subst hv1
-      rcases h2 with h2 | ⟨ha2, hb2, hv2⟩
-      · exact (hagree a2 v2 (by rintro rfl; exact hnew v2 h2) h2).symm
-      · exact hv2.symm
+  · simp only [castVote_votes, Subtype.ext_iff] at *
+    grind
 
-theorem inv_step : Preserves (next (A := A)) (Inv (A := A)) := by
+theorem inv_step : Preserves (next (A := A)) (St.Inv (A := A)) := by
   intro s hs s' hstep
   simp only [next, increase, vote, rel_orElse, rel_choiceAll] at hstep
   rcases hstep with ⟨⟨a, b⟩, h⟩ | ⟨⟨a, b, v⟩, h⟩
@@ -432,11 +423,10 @@ theorem inv_step : Preserves (next (A := A)) (Inv (A := A)) := by
   · exact preserves_voteFor a b v s hs s' h
 
 omit [DecidableEq A] in
-theorem inv_init : (init (A := A)) ⊆ₙ (Inv (A := A)) := by
+theorem inv_init : (init (A := A)) ⊆ₙ (St.Inv (A := A)) := by
   intro s hs
-  refine ⟨?_, ?_⟩
-  · intro a b v hv; exact absurd hv (hs.2 a b v)
-  · intro a1 a2 b v1 v2 h1 h2; exact absurd h1 (hs.2 a1 b v1)
+  simp only [init, St.Inv, VotesSafe, OneValuePerBallot, VotedFor] at hs ⊢
+  grind
 
 /-! ## Consensus safety -/
 
@@ -451,7 +441,7 @@ end St
 /-- **Simple Paxos is safe**, for an *arbitrary* acceptor type and quorum
 system.  In every reachable state any two chosen ballots carry the same value. -/
 theorem paxos_safe : (M (A := A)).Safe (Consistent (A := A)) :=
-  Module.safe_of_invariant (M := M) (I := Inv) inv_init inv_step
+  Module.safe_of_invariant (M := M) (I := St.Inv) inv_init inv_step
     (fun _ hs _ _ _ _ hb hb' => chosen_agree hs.1 hs.2 hb hb')
 
 namespace St
