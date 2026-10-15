@@ -9,3 +9,4 @@ import Examples.MutexLiveness
 import Examples.ParallelLiveness
 import Examples.Frame
 import Examples.RelyGuarantee
+import Examples.Paxos

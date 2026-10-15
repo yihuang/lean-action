@@ -236,7 +236,7 @@ theorem leadsTo_exit {n : Nat} (i : Fin n) (b : Behavior (St n))
     (I := InCS i) hbeh hI hdec hA henabled hfair).mono (fun _ _ => trivial) ?_
   intro s hs
   by_cases h : s.pc i = Pc.cs
-  · have : csRank i s = 1 := by unfold csRank; rw [if_pos h]
+  · have : csRank i s = 1 := by unfold csRank; rw [ite_eq_left h]
     omega
   · exact h
 

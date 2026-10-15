@@ -243,11 +243,11 @@ theorem upd_fun [DecidableEq α] (f : α → β) (i : α) (v : β) :
     upd f i v = fun j => if j = i then v else f j := rfl
 
 theorem upd_same [DecidableEq α] (f : α → β) (i : α) (v : β) : upd f i v i = v :=
-  if_pos rfl
+  ite_eq_left rfl
 
 theorem upd_noteq [DecidableEq α] {i j : α} (h : j ≠ i) (f : α → β) (v : β) :
     upd f i v j = f j :=
-  if_neg h
+  ite_eq_right h
 
 /-- Commutation of two updates at distinct indices: the lemma that makes
 array-like footprints work. -/
@@ -258,10 +258,10 @@ theorem upd_comm [DecidableEq α] {i j : α} (h : i ≠ j) (f : α → β) (a b 
     (if k = i then a else (if k = j then b else f k))
   by_cases hki : k = i
   · subst hki
-    rw [if_neg h, if_pos rfl, if_pos rfl]
+    rw [ite_eq_right h, ite_eq_left rfl, ite_eq_left rfl]
   · by_cases hkj : k = j
     · subst hkj
-      rw [if_pos rfl, if_neg (Ne.symm h), if_pos rfl]
-    · rw [if_neg hkj, if_neg hki, if_neg hki, if_neg hkj]
+      rw [ite_eq_left rfl, ite_eq_right (Ne.symm h), ite_eq_left rfl]
+    · rw [ite_eq_right hkj, ite_eq_right hki, ite_eq_right hki, ite_eq_right hkj]
 
 end LeanAction
